@@ -1,0 +1,7 @@
+curl-cffi==0.15.0      # TLS/JA3 taklidi ile HTTP — Cloudflare/anti-bot bypass
+pycryptodome==3.23.0   # CryptoJS AES + PBKDF2-SHA512 çözme (data-rm-k)
+questionary==2.1.1     # terminalde hiyerarşik + çoklu seçim menü
+m3u8==6.0.0            # master playlist ayrıştırma (çözünürlük seçimi)
+selectolax==0.4.10     # hızlı HTML parse (yedek)
+rich==15.0.0           # renkli terminal çıktısı
+yt-dlp>=2025.12.08     # indirme + izleme akışı (venv'de kurulu olmalı → --impersonate)

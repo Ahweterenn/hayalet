@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hayalet"
+version = "0.1.0"
+description = "Dizipal için tarayıcısız (headless) Python CLI — m3u8 izleme ve indirme."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "curl-cffi>=0.15",
+    "pycryptodome>=3.23",
+    "questionary>=2.1",
+    "m3u8>=6.0",
+    "selectolax>=0.4",
+    "rich>=15.0",
+    "yt-dlp>=2025.12.08",
+]
+
+[project.scripts]
+hayalet = "hayalet.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hayalet*"]

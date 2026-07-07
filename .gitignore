@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+*.log
+downloads/
+.cache/
+.claude/settings.local.json
+reference/
+yapılcaklar.txt
