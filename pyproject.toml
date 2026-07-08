@@ -15,7 +15,6 @@ dependencies = [
     "m3u8>=6.0",
     "selectolax>=0.4",
     "rich>=15.0",
-    "yt-dlp>=2025.12.08",
 ]
 
 [project.scripts]

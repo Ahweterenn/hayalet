@@ -18,6 +18,10 @@ _CACHE = config.CACHE_DIR / "domain.json"
 _CACHE_TTL = 6 * 3600   # 6 saat
 
 
+class ResolverError(Exception):
+    """Hiçbir domain adayı doğrulanamadı — kullanıcı --domain ile elle vermeli."""
+
+
 def _looks_real(html: str) -> bool:
     low = html.lower()
     return "dizipal" in low and any(w in low for w in ("dizi", "bolum", "film"))
@@ -79,6 +83,7 @@ def resolve(net: Network, session: SessionState, override: str | None = None,
             _save(url)
             return url
 
-    # Hiçbiri olmadıysa bilineni döndür (yine de denensin)
-    session.base_url = config.KNOWN_DOMAIN
-    return config.KNOWN_DOMAIN
+    raise ResolverError(
+        f"Güncel dizipal domaini bulunamadı (denenenler: {len(seen)} aday, hepsi başarısız). "
+        f"Site adresini elle belirt: --domain https://dizipalXXXX.com"
+    )

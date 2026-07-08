@@ -1,6 +1,6 @@
 """Yerel 'impersonating' HLS proxy — izleme için ses+görüntü+altyazı sorununu çözer.
 
-CDN, TLS taklidi olmayan istemcileri (mpv/ffmpeg/vlc/potplayer) 403 ile engelliyor;
+CDN, TLS taklidi olmayan istemcileri (tarayıcı/ffmpeg) 403 ile engelliyor;
 ses ayrı rendition; segmentler .jpg gibi gizli. Çözüm: oynatıcı localhost'taki bu
 proxy'ye bağlanır, proxy tüm playlist/segment isteklerini curl-cffi (impersonate) ile
 çekip verir. Playlist URL'leri proxy'ye yönlendirilir; segmentler .ts olarak sunulur.
@@ -94,6 +94,389 @@ def build_master_playlist(video_variants, audios, subtitle=None) -> str:
     return "\n".join(lines) + "\n"
 
 
+# İzleme sayfası: video + tek bir dişli ikonu (sağ üst — sağ alt, native video
+# denetimlerinin/tam ekran düğmesinin tam üstüne denk geldiği için taşındı),
+# YouTube tarzı katmanlı ayarlar menüsü (Kalite / Ses / Altyazı, altyazının
+# içinde Boyut+Renk alt menüsü).
+# __SRC__ / __TITLE__ çalışma anında _player_page() içinde değiştirilir.
+_PLAYER_TEMPLATE = """<!doctype html><html lang='tr'><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>İzle</title><style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:system-ui,'Segoe UI',sans-serif}
+#wrap{position:fixed;inset:0}
+video{width:100%;height:100%;background:#000}
+#bar{position:fixed;top:0;left:0;right:0;padding:10px 14px;color:#fff;
+background:linear-gradient(#000c,#0000);opacity:0;transition:opacity .25s;
+z-index:5;pointer-events:none}
+#wrap.active #bar{opacity:1}
+#bar .t{font-weight:600;max-width:70vw;overflow:hidden;text-overflow:ellipsis;
+white-space:nowrap;display:inline-block}
+/* Denetimler fareyle etkileşim olmadığında (idle) tamamen gizlenir; #wrap'e
+   JS ile eklenen .active sınıfı görünürlüğü yönetir (tam ekranda da çalışır —
+   eski :hover mantığı tam ekranda imleç ekranın üzerinde sayıldığından hiç
+   gizlenmiyordu). İmleç de idle'da gizlenir. */
+#wrap:not(.active){cursor:none}
+.ctlbtn{position:fixed;top:8px;width:36px;height:36px;border-radius:50%;
+background:rgba(20,20,20,.75);color:#fff;border:1px solid #5558;
+display:flex;align-items:center;justify-content:center;cursor:pointer;
+font-size:16px;opacity:0;transition:opacity .2s,background .2s;z-index:6;
+user-select:none}
+.ctlbtn:hover{background:rgba(45,45,45,.9)}
+#wrap.active .ctlbtn,#gear.open{opacity:1}
+#gear{right:12px;font-size:17px}
+#fsBtn{right:56px}
+#gear.hidden,#fsBtn.hidden{display:none}
+/* Native tam ekran düğmesi videoyu TEK BAŞINA tam ekran yapıyor (gear/menü/
+   altyazı katmanımız kayboluyor). Onu gizleyip tüm tam ekranı kendi #wrap
+   düğmemiz/F tuşumuz üzerinden yönlendiriyoruz (WebKit/Blink). */
+video::-webkit-media-controls-fullscreen-button{display:none}
+#menu{position:fixed;right:12px;top:52px;width:260px;
+max-height:min(60vh,420px);overflow-y:auto;background:rgba(24,24,24,.94);
+backdrop-filter:blur(8px);border:1px solid #444;border-radius:10px;color:#fff;
+font-size:13px;box-shadow:0 8px 28px #000a;z-index:7}
+#menu.hidden{display:none}
+#menu .hd{display:flex;align-items:center;gap:8px;padding:11px 12px;
+border-bottom:1px solid #3a3a3a;font-weight:600}
+#menu .hd .back{cursor:pointer;opacity:.75;padding:0 4px;font-size:16px}
+#menu .hd .back:hover{opacity:1}
+#menu .row{display:flex;align-items:center;justify-content:space-between;
+padding:9px 14px;cursor:pointer;gap:10px}
+#menu .row:hover{background:rgba(255,255,255,.1)}
+#menu .row .l{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#menu .row .r{display:flex;align-items:center;gap:6px;opacity:.65;
+font-size:12px;flex-shrink:0}
+#menu .row .check{color:#4dabf7;opacity:1;font-size:13px}
+#menu .row .chev{opacity:.55;font-size:14px}
+#menu .sep{height:1px;background:#3a3a3a;margin:4px 0}
+#menu .sec{padding:8px 14px 2px;font-size:11px;opacity:.5;
+text-transform:uppercase;letter-spacing:.05em}
+#capOverlay{position:absolute;left:0;right:0;bottom:7%;display:none;
+justify-content:center;pointer-events:none;z-index:4;padding:0 4%}
+#capOverlay span{display:inline-block;max-width:92%;text-align:center;
+white-space:pre-line;line-height:1.35;border-radius:.2em}
+video::cue{color:transparent;background:transparent;text-shadow:none}
+</style></head><body><div id='wrap'>
+<video id='v' controls autoplay playsinline></video>
+<div id='bar'><span class='t' id='ttl'></span></div>
+<div id='fsBtn' class='ctlbtn' title='Tam ekran (F)'>⛶</div>
+<div id='gear' class='ctlbtn' title='Ayarlar'>⚙</div>
+<div id='menu' class='hidden'></div>
+<div id='capOverlay'><span id='capText'></span></div>
+</div>
+<script src='/hls.js'></script>
+<script>
+var src=__SRC__,title=__TITLE__;
+var v=document.getElementById('v');
+var wrap=document.getElementById('wrap');
+var gear=document.getElementById('gear');
+var menu=document.getElementById('menu');
+var $=function(i){return document.getElementById(i);};
+$('ttl').textContent=title;document.title=title;
+
+var fsBtn=$('fsBtn');
+
+// Video (native denetimleri) klavye fokusunu alırsa tarayıcı kendi dahili
+// kısayollarını (boşluk/ok tuşları vb.) devreye sokuyor ve bu olaylar bizim
+// document seviyesindeki dinleyicimize HİÇ ulaşmıyor (native tamamen yutuyor) —
+// böylece "10sn ileri sar" gibi tutarlı kısayollarımız, kullanıcı denetim
+// çubuğuna dokunur dokunmaz beklenmedik/tutarsız bir native davranışa dönüşüyordu.
+// Video hiçbir zaman fokusu tutmasın diye anında blur ediyoruz; fare ile
+// oynat/durdur/ses/kaydırma çubuğu etkileşimleri bundan etkilenmez, sadece
+// klavye fokusunun native'e geçmesi engellenir.
+v.addEventListener('focus',function(){v.blur();});
+
+function toggleFullscreen(){
+if(document.fullscreenElement)document.exitFullscreen();
+else if(wrap.requestFullscreen)wrap.requestFullscreen();
+}
+fsBtn.onclick=function(e){e.stopPropagation();toggleFullscreen();};
+
+// Denetimleri (bar/gear/fs düğmesi + imleç) fare hareketinde göster, hareketsiz
+// kalınca gizle. Menü açıkken asla gizlenmez. Eski :hover mantığı tam ekranda
+// hiç gizlenmiyordu; bu, tam ekranda da doğru çalışır.
+var hideTimer;
+function showControls(){
+wrap.classList.add('active');
+clearTimeout(hideTimer);
+hideTimer=setTimeout(function(){
+if(menu.classList.contains('hidden'))wrap.classList.remove('active');
+},2800);
+}
+wrap.addEventListener('mousemove',showControls);
+wrap.addEventListener('mousedown',showControls);
+wrap.addEventListener('touchstart',showControls,{passive:true});
+showControls();
+
+document.addEventListener('keydown',function(e){
+if(/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName))return;
+if(!menu.classList.contains('hidden')){
+if(e.key==='Escape')closeMenu();
+return;
+}
+var k=e.key.toLowerCase();
+if(k==='f'||k===' '||k==='k'||k==='arrowright'||k==='arrowleft'||
+k==='arrowup'||k==='arrowdown'||k==='m')showControls();
+switch(k){
+case 'f':
+e.preventDefault();
+toggleFullscreen();
+break;
+case ' ':
+case 'k':
+e.preventDefault();
+v.paused?v.play():v.pause();
+break;
+case 'arrowright':
+e.preventDefault();
+v.currentTime+=10;
+break;
+case 'arrowleft':
+e.preventDefault();
+v.currentTime-=10;
+break;
+case 'arrowup':
+e.preventDefault();
+v.volume=Math.min(1,v.volume+.1);
+break;
+case 'arrowdown':
+e.preventDefault();
+v.volume=Math.max(0,v.volume-.1);
+break;
+case 'm':
+e.preventDefault();
+v.muted=!v.muted;
+break;
+}
+});
+
+// Altyazı, native cue render yerine KENDİ katmanımızda (#capOverlay) çizilir.
+// Neden: native/hls.js cue render'ının stili (boyut/renk/arka plan) tarayıcıya
+// göre değişip hiç yansımayabiliyor. Bunun yerine seçili altyazı track'inin
+// modunu 'hidden'a çekiyoruz — böylece TARAYICI hiçbir şey ÇİZMİYOR ama cue'lar
+// (activeCues) okunabilir kalıyor; metni alıp tamamen kontrolümüzdeki bir
+// <span>'e basıyoruz. 'hidden' yapmak ('showing' yerine), altyazının ekranda
+// ÇİFT (native + bizimki) görünmesini de kökten engelliyor.
+var SUBSIZE={s:'.85em',m:'1.25em',l:'1.75em',xl:'2.25em'};
+var SUBSIZE_L={s:'Küçük',m:'Orta',l:'Büyük',xl:'Çok büyük'};
+var SUBCOLOR={w:'#fff',y:'#ffeb3b',g:'#00e676',c:'#18ffff'};
+var SUBCOLOR_L={w:'Beyaz',y:'Sarı',g:'Yeşil',c:'Camgöbeği'};
+var SUBBG={n:'transparent',h:'rgba(0,0,0,.6)',s:'rgba(0,0,0,.9)'};
+var SUBBG_L={n:'Yok',h:'Yarı saydam',s:'Koyu'};
+var subSize=localStorage.getItem('subsize')||'m';
+var subColor=localStorage.getItem('subcolor')||'w';
+var subBg=localStorage.getItem('subbg')||'n';
+var capOverlay=$('capOverlay');
+var capText=$('capText');
+function applyCue(){
+capText.style.fontSize=(SUBSIZE[subSize]||SUBSIZE.m);
+capText.style.color=(SUBCOLOR[subColor]||SUBCOLOR.w);
+capText.style.background=(SUBBG[subBg]||SUBBG.n);
+capText.style.padding=(subBg==='n')?'0':'.15em .5em';
+capText.style.textShadow='0 0 3px #000,0 0 3px #000';
+}
+applyCue();
+function escCueText(t){
+var e=t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+return e.replace(/&lt;(\\/?)(i|b|u)&gt;/g,'<$1$2>');
+}
+function hideNativeCues(){
+// hls.js seçili track'i 'showing' yapar (native render açık). 'hidden'a çekip
+// native render'ı kapatıyoruz; cue'lar okunmaya devam eder.
+if(!h)return;
+var tts=v.textTracks;
+for(var i=0;i<tts.length;i++){
+var tt=tts[i];
+if((tt.kind==='subtitles'||tt.kind==='captions')&&tt.mode==='showing')tt.mode='hidden';
+}
+}
+function pollCaptions(){
+if(!h){capOverlay.style.display='none';return;}
+hideNativeCues();
+var text='',tts=v.textTracks;
+for(var i=0;i<tts.length;i++){
+var tt=tts[i];
+if((tt.kind!=='subtitles'&&tt.kind!=='captions')||tt.mode==='disabled')continue;
+if(tt.activeCues&&tt.activeCues.length){
+var parts=[];
+for(var j=0;j<tt.activeCues.length;j++)parts.push(tt.activeCues[j].text||'');
+text=parts.join('\\n');
+}
+}
+if(h.subtitleDisplay&&text){
+capText.innerHTML=escCueText(text).replace(/\\n/g,'<br>');
+capOverlay.style.display='flex';
+}else{
+capOverlay.style.display='none';
+}
+}
+setInterval(pollCaptions,120);
+
+var stack=['root'];
+var h=null;
+
+function openMenu(){stack=['root'];render();menu.classList.remove('hidden');gear.classList.add('open');showControls();}
+function closeMenu(){menu.classList.add('hidden');gear.classList.remove('open');showControls();}
+function pushView(n){stack.push(n);render();}
+function popView(){stack.pop();if(!stack.length)stack=['root'];render();}
+
+gear.onclick=function(e){
+e.stopPropagation();
+if(menu.classList.contains('hidden'))openMenu();else closeMenu();
+};
+// Menü içindeki satır tıklamaları render()'da kendi DOM node'unu siliyor
+// (menu.innerHTML=''); olay yine de document'a kabarcıklanmaya devam eder ve
+// aşağıdaki "dışına tıklayınca kapat" mantığı, artık DOM'da olmayan eski
+// node'u "menü dışında" sanıp menüyü anında kapatırdı. Bunu menü konteynerinin
+// kendisinde durdurarak önlüyoruz (menu asla kendi kendini silmiyor).
+menu.addEventListener('click',function(e){e.stopPropagation();});
+document.addEventListener('click',function(e){
+if(!menu.classList.contains('hidden')&&!menu.contains(e.target)&&e.target!==gear)closeMenu();
+});
+
+function mkEl(tag,cls){
+var e=document.createElement(tag);
+if(cls)e.className=cls;
+return e;
+}
+function addHeader(title,back){
+var hd=mkEl('div','hd');
+if(back){
+var b=mkEl('span','back');
+b.textContent='‹';
+b.onclick=popView;
+hd.appendChild(b);
+}
+var t=document.createElement('span');
+t.textContent=title;
+hd.appendChild(t);
+menu.appendChild(hd);
+}
+function addRow(label,value,checked,onClick,chevron){
+var r=mkEl('div','row');
+var l=mkEl('div','l');
+l.textContent=label;
+r.appendChild(l);
+var right=mkEl('div','r');
+if(value)right.appendChild(document.createTextNode(value));
+if(checked){
+var c=mkEl('span','check');
+c.textContent='✓';
+right.appendChild(c);
+}
+if(chevron){
+var cv=mkEl('span','chev');
+cv.textContent='›';
+right.appendChild(cv);
+}
+r.appendChild(right);
+if(onClick)r.onclick=onClick;
+menu.appendChild(r);
+}
+function addSep(){menu.appendChild(mkEl('div','sep'));}
+function addSec(label){
+var s=mkEl('div','sec');
+s.textContent=label;
+menu.appendChild(s);
+}
+
+function qualityLabel(){
+if(!h)return'';
+if(h.autoLevelEnabled)return'Otomatik';
+var L=h.levels[h.currentLevel];
+return L?(L.height?L.height+'p':(Math.round((L.bitrate||0)/1000)+'k')):'';
+}
+function audioLabel(){
+if(!h||!h.audioTracks||!h.audioTracks.length)return'';
+var T=h.audioTracks[h.audioTrack];
+return T?(T.name||T.lang||''):'';
+}
+function subLabel(){
+if(!h||!h.subtitleDisplay)return'Kapalı';
+var T=(h.subtitleTracks||[])[h.subtitleTrack];
+return T?(T.name||T.lang||'Açık'):'Kapalı';
+}
+
+function render(){
+menu.innerHTML='';
+var view=stack[stack.length-1];
+if(view==='root'){
+addHeader('Ayarlar',false);
+if(h){
+if(h.levels&&h.levels.length>1){
+addRow('Kalite',qualityLabel(),false,function(){pushView('quality');},true);
+}
+if(h.audioTracks&&h.audioTracks.length>1){
+addRow('Ses',audioLabel(),false,function(){pushView('audio');},true);
+}
+addRow('Altyazı',subLabel(),false,function(){pushView('subtitle');},true);
+}else{
+addRow('Yükleniyor…',null,false,null,false);
+}
+}else if(view==='quality'){
+addHeader('Kalite',true);
+addRow('Otomatik',null,!!h.autoLevelEnabled,function(){h.currentLevel=-1;closeMenu();},false);
+(h.levels||[]).forEach(function(L,i){
+var lbl=L.height?(L.height+'p'):(Math.round((L.bitrate||0)/1000)+'k');
+addRow(lbl,null,(!h.autoLevelEnabled&&h.currentLevel===i),function(){h.currentLevel=i;closeMenu();},false);
+});
+}else if(view==='audio'){
+addHeader('Ses',true);
+(h.audioTracks||[]).forEach(function(T,i){
+addRow(T.name||T.lang||('Ses '+(i+1)),null,h.audioTrack===i,function(){h.audioTrack=i;closeMenu();},false);
+});
+}else if(view==='subtitle'){
+addHeader('Altyazı',true);
+addRow('Kapalı',null,!h.subtitleDisplay,function(){h.subtitleDisplay=false;closeMenu();},false);
+(h.subtitleTracks||[]).forEach(function(T,i){
+addRow(T.name||T.lang||('Altyazı '+(i+1)),null,h.subtitleDisplay&&h.subtitleTrack===i,function(){h.subtitleDisplay=true;h.subtitleTrack=i;closeMenu();},false);
+});
+addSep();
+addRow('Altyazı Ayarları',null,false,function(){pushView('substyle');},true);
+}else if(view==='substyle'){
+addHeader('Altyazı Ayarları',true);
+addSec('Boyut');
+Object.keys(SUBSIZE_L).forEach(function(k){
+addRow(SUBSIZE_L[k],null,subSize===k,function(){subSize=k;localStorage.setItem('subsize',k);applyCue();render();},false);
+});
+addSec('Renk');
+Object.keys(SUBCOLOR_L).forEach(function(k){
+addRow(SUBCOLOR_L[k],null,subColor===k,function(){subColor=k;localStorage.setItem('subcolor',k);applyCue();render();},false);
+});
+addSec('Arka Plan');
+Object.keys(SUBBG_L).forEach(function(k){
+addRow(SUBBG_L[k],null,subBg===k,function(){subBg=k;localStorage.setItem('subbg',k);applyCue();render();},false);
+});
+}
+}
+
+if(window.Hls&&Hls.isSupported()){
+// renderTextTracksNatively:true → cue'lar native TextTrack'lere yazılır (bize
+// activeCues verir, hls.js kendi <div> altyazı katmanını OLUŞTURMAZ). Ardından
+// track modunu 'hidden'a çekip (pollCaptions) native render'ı da kapatıyoruz;
+// altyazıyı yalnız kendi katmanımız çiziyor → asla çift görünmüyor.
+h=new Hls({subtitleDisplay:true,renderTextTracksNatively:true});
+h.loadSource(src);
+h.attachMedia(v);
+h.on(Hls.Events.MANIFEST_PARSED,function(){
+v.play().catch(function(){});
+if(!menu.classList.contains('hidden'))render();
+});
+h.on(Hls.Events.AUDIO_TRACKS_UPDATED,function(){if(!menu.classList.contains('hidden'))render();});
+h.on(Hls.Events.SUBTITLE_TRACKS_UPDATED,function(){if(!menu.classList.contains('hidden'))render();});
+if(Hls.Events.SUBTITLE_TRACK_SWITCH)h.on(Hls.Events.SUBTITLE_TRACK_SWITCH,hideNativeCues);
+h.on(Hls.Events.LEVEL_SWITCHED,function(){if(!menu.classList.contains('hidden'))render();});
+}else if(v.canPlayType('application/vnd.apple.mpegurl')){
+v.src=src;
+v.addEventListener('loadedmetadata',function(){v.play().catch(function(){});});
+gear.classList.add('hidden');
+}else{
+document.body.innerHTML='<p style=\\'color:#fff;padding:1em\\'>Tarayıcı HLS oynatamıyor.</p>';
+}
+</script></body></html>
+"""
+
+
 class HLSProxy:
     def __init__(self, session: SessionState, referer: str,
                  subtitle_url: str | None = None,
@@ -105,6 +488,15 @@ class HLSProxy:
         self._virtual: dict[int, tuple[str, str]] = {}
         self._vcount = 0
         self._lock = threading.Lock()
+        # Segment/playlist istekleri arasında TCP/TLS bağlantısını paylaşır (her
+        # segment için yeniden el sıkışma yapmaz) — indirme/izleme hızını artırır.
+        # curl-cffi Session'ı eşzamanlı thread'lerden kullanmak güvenli (test edildi).
+        client_kwargs = {"impersonate": session.impersonate}
+        if session.proxy:
+            # Video/segment trafiği de aynı proxy'den (ör. Tor) geçmezse, sadece
+            # arama/bölüm-sayfası isteklerini gizlemenin bir anlamı kalmaz.
+            client_kwargs["proxies"] = {"http": session.proxy, "https": session.proxy}
+        self._client = creq.Session(**client_kwargs)
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.port = self.httpd.server_address[1]
         self.base = f"http://127.0.0.1:{self.port}"
@@ -127,6 +519,10 @@ class HLSProxy:
             self.httpd.shutdown()
         except Exception:
             pass
+        try:
+            self._client.close()
+        except Exception:
+            pass
 
     def proxied(self, real_url: str, kind: str = "ts",
                 referer: str | None = None) -> str:
@@ -140,88 +536,19 @@ class HLSProxy:
         return u
 
     def _player_page(self, src: str, title: str) -> str:
-        """Tarayıcıda HLS oynatan sayfa (hls.js) + ses/altyazı/kalite seçicileri.
+        """Tarayıcıda HLS oynatan sayfa (hls.js) + sağ alttaki tek ayarlar menüsü.
 
         Tarayıcılar .m3u8'i çoğunlukla native oynatamaz; hls.js segmentleri yerel
         proxy'den çeker (proxy CDN'e impersonate ile gider). Altyazı master'a
-        SUBTITLES kanalı olarak enjekte edilir; ayrı ses rendition'ları ve kalite
-        varyantları master'da olduğu gibi kaldığından hls.js üzerinden seçilebilir.
+        SUBTITLES kanalı olarak enjekte edilir. Kalite/ses/altyazı seçimi ve
+        altyazı boyut-renk ayarı, dişli ikonun açtığı katmanlı (YouTube tarzı)
+        tek bir menüde toplanır — bkz. _PLAYER_TEMPLATE.
         """
-        head = (
-            "<!doctype html><html lang=\"tr\"><head><meta charset=\"utf-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            "<title>İzle</title><style>"
-            "*{box-sizing:border-box}"
-            "html,body{margin:0;height:100%;background:#000;overflow:hidden;"
-            "font-family:system-ui,'Segoe UI',sans-serif}"
-            "#wrap{position:fixed;inset:0}"
-            "video{width:100%;height:100%;background:#000}"
-            "#bar{position:fixed;top:0;left:0;right:0;display:flex;gap:12px;"
-            "align-items:center;flex-wrap:wrap;padding:10px 14px;color:#fff;"
-            "background:linear-gradient(#000c,#0000);opacity:0;"
-            "transition:opacity .25s;z-index:5}"
-            "#wrap:hover #bar,#bar:focus-within{opacity:1}"
-            "#bar .t{font-weight:600;margin-right:auto;max-width:48vw;overflow:hidden;"
-            "text-overflow:ellipsis;white-space:nowrap}"
-            "#bar label{font-size:12px;opacity:.75;margin-right:5px}"
-            "#bar select{background:rgba(20,20,20,.85);color:#fff;border:1px solid #555;"
-            "border-radius:6px;padding:5px 8px;font-size:13px;outline:none;cursor:pointer}"
-            ".grp{display:flex;align-items:center}.hidden{display:none}"
-            "</style></head><body><div id=\"wrap\">"
-            "<video id=\"v\" controls autoplay playsinline></video>"
-            "<div id=\"bar\"><span class=\"t\" id=\"ttl\"></span>"
-            "<span class=\"grp\" id=\"g-audio\"><label>Ses</label>"
-            "<select id=\"audio\"></select></span>"
-            "<span class=\"grp\" id=\"g-sub\"><label>Altyazı</label>"
-            "<select id=\"sub\"></select></span>"
-            "<span class=\"grp\" id=\"g-quality\"><label>Kalite</label>"
-            "<select id=\"quality\"></select></span>"
-            "</div></div>"
-            "<script src=\"/hls.js\"></script>"
-            "<script>"
+        return (
+            _PLAYER_TEMPLATE
+            .replace("__SRC__", json.dumps(src))
+            .replace("__TITLE__", json.dumps(title))
         )
-        cfg = "var src=" + json.dumps(src) + ",title=" + json.dumps(title) + ";"
-        body = (
-            "var v=document.getElementById('v');"
-            "var $=function(i){return document.getElementById(i)};"
-            "$('ttl').textContent=title;document.title=title;"
-            "function fill(sel,items,cur){sel.innerHTML='';items.forEach(function(it){"
-            "var o=document.createElement('option');o.value=it.v;o.textContent=it.l;"
-            "if(String(it.v)===String(cur))o.selected=true;sel.appendChild(o);});}"
-            "function grp(id,show){$(id).classList.toggle('hidden',!show);}"
-            "if(window.Hls&&Hls.isSupported()){"
-            "var h=new Hls({subtitleDisplay:true});h.loadSource(src);h.attachMedia(v);"
-            "function refreshQuality(){var lv=h.levels||[];if(lv.length>1){"
-            "var items=[{v:-1,l:'Otomatik'}];lv.forEach(function(L,i){"
-            "items.push({v:i,l:(L.height?L.height+'p':(Math.round((L.bitrate||0)/1000)+'k'))});});"
-            "fill($('quality'),items,h.autoLevelEnabled?-1:h.currentLevel);grp('g-quality',true);"
-            "}else{grp('g-quality',false);}}"
-            "function refreshAudio(){var at=h.audioTracks||[];if(at.length>1){"
-            "var items=at.map(function(T,i){return {v:i,l:(T.name||T.lang||('Ses '+(i+1)))};});"
-            "fill($('audio'),items,h.audioTrack);grp('g-audio',true);"
-            "}else{grp('g-audio',false);}}"
-            "function refreshSub(){var st=h.subtitleTracks||[];"
-            "var items=[{v:-1,l:'Kapalı'}];st.forEach(function(T,i){"
-            "items.push({v:i,l:(T.name||T.lang||('Altyazı '+(i+1)))});});"
-            "fill($('sub'),items,h.subtitleDisplay?h.subtitleTrack:-1);grp('g-sub',true);}"
-            "$('quality').onchange=function(){h.currentLevel=parseInt(this.value,10);};"
-            "$('audio').onchange=function(){h.audioTrack=parseInt(this.value,10);};"
-            "$('sub').onchange=function(){var i=parseInt(this.value,10);"
-            "h.subtitleDisplay=(i>=0);h.subtitleTrack=i;};"
-            "h.on(Hls.Events.MANIFEST_PARSED,function(){v.play().catch(function(){});"
-            "refreshQuality();refreshAudio();refreshSub();});"
-            "h.on(Hls.Events.AUDIO_TRACKS_UPDATED,refreshAudio);"
-            "h.on(Hls.Events.SUBTITLE_TRACKS_UPDATED,refreshSub);"
-            "h.on(Hls.Events.LEVEL_SWITCHED,function(e,d){"
-            "if($('quality').options.length)$('quality').value=String(h.autoLevelEnabled?-1:d.level);});"
-            "}else if(v.canPlayType('application/vnd.apple.mpegurl')){"
-            "v.src=src;v.addEventListener('loadedmetadata',function(){v.play().catch(function(){});});"
-            "$('bar').classList.add('hidden');"
-            "}else{document.body.innerHTML='<p style=\"color:#fff;padding:1em\">"
-            "Taray\\u0131c\\u0131 HLS oynatam\\u0131yor.</p>';}"
-            "</script></body></html>"
-        )
-        return head + cfg + body
 
     def _subs_playlist(self) -> str:
         """Tek .vtt'yi saran, VOD altyazı media playlist'i."""
@@ -286,9 +613,8 @@ class HLSProxy:
                     self.close_connection = True
 
             def _fetch(self, real, timeout, stream=False, referer=None):
-                return creq.get(
+                return proxy._client.get(
                     real,
-                    impersonate=session.impersonate,
                     headers={"User-Agent": session.user_agent,
                              "Referer": referer or proxy.referer},
                     cookies=session.cookies,

@@ -4,4 +4,3 @@ questionary==2.1.1     # terminalde hiyerarşik + çoklu seçim menü
 m3u8==6.0.0            # master playlist ayrıştırma (çözünürlük seçimi)
 selectolax==0.4.10     # hızlı HTML parse (yedek)
 rich==15.0.0           # renkli terminal çıktısı
-yt-dlp>=2025.12.08     # indirme + izleme akışı (venv'de kurulu olmalı → --impersonate)

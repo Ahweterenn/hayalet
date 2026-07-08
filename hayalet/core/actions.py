@@ -1,8 +1,9 @@
-"""Aksiyon katmanı: mpv ile izleme, yt-dlp ile indirme.
+"""Aksiyon katmanı: tarayıcıda (hls.js) izleme, ffmpeg ile indirme.
 
-Her iki araca da SessionState'ten cookie + user-agent + referer aktarılır
-(anti-bot için kritik). Ayrı Türkçe .vtt varsa mpv'ye --sub-file, indirmede
-sidecar dosya olarak eklenir.
+İkisi de yerel HLS proxy üzerinden SessionState'teki cookie + user-agent +
+referer ile CDN'e bağlanır (anti-bot için kritik). Ayrı Türkçe .vtt varsa
+softsub olarak muxlanır (indirme) ya da HLS altyazı kanalına enjekte edilir
+(izleme, bkz. proxy.py).
 """
 from __future__ import annotations
 
@@ -36,8 +37,6 @@ def _require(tool: str) -> str | None:
         return found
     # PATH'te yoksa bilinen kurulum konumlarına bak (kurulum PATH'e eklemeyebilir)
     extra = {
-        "mpv": [r"C:\Program Files\MPV Player\mpv.exe",
-                r"C:\Program Files\mpv\mpv.exe"],
         "ffmpeg": [r"C:\ffmpeg\bin\ffmpeg.exe"],
     }
     for cand in extra.get(tool, []):
@@ -145,8 +144,7 @@ def _run_ffmpeg_progress(cmd: list[str], duration: float, on_update) -> tuple[in
 # Tarayıcı localhost'taki impersonating proxy'ye bağlanır; proxy master'ı (video +
 # ses + enjekte edilen Türkçe altyazı) curl-cffi ile çekip verir. Oynatma
 # proxy'nin sunduğu hls.js sayfasında (/player.html) yapılır.
-def watch(session: SessionState, net: Network, merged, title: str,
-          player: str = "auto") -> int:
+def watch(session: SessionState, net: Network, merged, title: str) -> int:
     """Birleştirilmiş akışı tarayıcıda (hls.js) oynatır.
 
     Dublaj + orijinal sesleri ve Türkçe altyazıyı içeren sentetik bir HLS master
@@ -235,12 +233,25 @@ def download(session: SessionState, net: Network, merged, title: str,
         except Exception:
             sub_path = None
 
+    # Video girişi: master m3u8 birden çok kalite içeriyorsa ffmpeg VARSAYILAN
+    # olarak İLK varyantı seçer — bu, bazı sitelerde (ör. hdfilmcehennemi) en
+    # DÜŞÜK kalitedir. Her zaman EN YÜKSEK kaliteyi indirmek için en iyi varyantı
+    # elle çözüp veriyoruz (list_variants çözünürlüğe göre azalan sıralı).
+    video_url = merged.video_master_url
+    try:
+        from hayalet.core.m3u8_parser import list_variants
+        _vars = list_variants(net, session, merged.video_master_url,
+                              merged.video_referer)
+        if _vars:
+            video_url = _vars[0].url
+    except Exception:
+        pass
+
     out_file = out_dir / f"{safe}.mp4"
     try:
-        # input 0 = video (master), sonra her ses kaynağı ayrı giriş
+        # input 0 = video (en yüksek kalite varyantı), sonra her ses kaynağı ayrı giriş
         cmd = [ff, "-y", "-allowed_extensions", "ALL", "-i",
-               proxy.proxied(merged.video_master_url, "m3u8",
-                             referer=merged.video_referer)]
+               proxy.proxied(video_url, "m3u8", referer=merged.video_referer)]
         for a in merged.audios:
             cmd += ["-allowed_extensions", "ALL", "-i",
                     proxy.proxied(a.url, "m3u8", referer=a.referer)]
@@ -278,7 +289,7 @@ def download(session: SessionState, net: Network, merged, title: str,
         if progress is not None and task_id is not None:
             # Yüzde barı için toplam süreyi ffprobe ile al, sonra -progress ile izle.
             dur = _ffprobe_duration(ff, proxy.proxied(
-                merged.video_master_url, "m3u8", referer=merged.video_referer))
+                video_url, "m3u8", referer=merged.video_referer))
             pcmd = ([ff, "-y", "-hide_banner", "-loglevel", "error",
                      "-progress", "pipe:1", "-nostats"] + cmd[2:])
             progress.update(task_id, description=f"⬇ {out_file.name} {info}")

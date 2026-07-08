@@ -22,7 +22,7 @@ from hayalet.core.session import SessionState
 class StreamInfo:
     m3u8_url: str
     subtitle_url: str | None
-    referer: str          # m3u8/mpv/yt-dlp için kullanılacak referer (iframe origin)
+    referer: str          # m3u8/proxy/ffmpeg için kullanılacak referer (iframe origin)
 
 
 class ExtractError(Exception):
@@ -64,7 +64,7 @@ def extract_stream(net: Network, session: SessionState, bolum_url: str) -> Strea
         # Ölü/park edilmiş player host'u: CHEQ → RTB → domain-parking zinciri.
         # (canvascascade.site vb. — genelde "Türkçe Dublaj" embed'lerinde.)
         # Arkasında video yok; bir anti-bot değil, süresi dolmuş kaynak. Tarayıcı
-        # da açamaz. Tam teşhis: docs/plan.md "CHEQ" notu.
+        # da açamaz (bkz. CLAUDE.md — DeadSourceError / CHEQ notu).
         host = urlparse(iframe_url).netloc
         dead_markers = ("oncheqresponse", "cheq", "northwavepoint",
                         "sk-park", "yfdpco1", "canvascascade", "ww38.")

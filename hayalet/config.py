@@ -16,7 +16,7 @@ RESOLVER_SOURCES: list[str] = []
 # curl-cffi TLS/JA3 taklidi profili.
 IMPERSONATE = "chrome"
 
-# curl-cffi, mpv ve yt-dlp'nin AYNI User-Agent'ı kullanması kritik.
+# curl-cffi ve ffmpeg'in (proxy üzerinden) AYNI User-Agent'ı kullanması kritik.
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -24,9 +24,6 @@ USER_AGENT = (
 
 REQUEST_TIMEOUT = 20
 MAX_RETRIES = 3
-
-# İzleme oynatıcısı: "auto" (PotPlayer > VLC > mpv) | "potplayer" | "vlc" | "mpv"
-PLAYER = "auto"
 
 DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -45,7 +42,9 @@ DEFAULT_HEADERS = {
 # --- Dizinler -------------------------------------------------------------
 PACKAGE_DIR = Path(__file__).resolve().parent      # .../hayalet/hayalet
 PROJECT_ROOT = PACKAGE_DIR.parent                  # .../hayalet
-DOWNLOAD_DIR = PROJECT_ROOT / "downloads"
+# İndirmeler kullanıcının Downloads klasörüne: diziler <Downloads>/<Dizi>/ altına,
+# filmler doğrudan <Downloads>/<Film>.mkv olarak iner (bkz. cli._out_dir/_file_title).
+DOWNLOAD_DIR = Path.home() / "Downloads"
 CACHE_DIR = PROJECT_ROOT / ".cache"
 
 # --- Site endpoint'leri (canlı incelemeyle doğrulandı) --------------------

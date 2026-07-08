@@ -1,45 +1,48 @@
-"""Arama + dizi/sezon/bölüm gezinme.
+"""Dizipal'e özel arama + dizi/sezon/bölüm gezinme.
 
 Arama: POST /bg/searchcontent (JSON döner).
 Bölümler: /series/<slug> sayfasındaki /bolum/<...-SxE> linklerinden türetilir.
+
+Site-bağımsız veri modelleri (Series/Episode) ve saf liste yardımcıları
+core/models.py'ye taşındı; burada geriye dönük uyumluluk için re-export
+edilir (mevcut `from hayalet.core.catalog import Episode, Series` importları
+değişmeden çalışmaya devam eder).
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 
 from hayalet import config
+from hayalet.core.models import (Episode, Series, episodes_in_season,
+                                 match_episode, next_episode, seasons_of)
 from hayalet.core.network import Network
 from hayalet.core.session import SessionState
 
-
-@dataclass
-class Series:
-    name: str
-    slug: str          # örn. "series/house-md-turkce-dublaj"
-    type: str = "Series"
-
-    def url(self, base_url: str) -> str:
-        return f"{base_url}/{self.slug.lstrip('/')}"
-
-
-@dataclass
-class Episode:
-    season: int
-    number: int
-    url: str
-    title: str = ""
-
-    @property
-    def label(self) -> str:
-        return self.title or f"Sezon {self.season} · Bölüm {self.number}"
+__all__ = ["Series", "Episode", "search", "suggest", "is_movie", "get_episodes",
+          "is_dubbed", "base_title", "find_counterpart", "find_original_counterpart",
+          "match_episode", "next_episode", "seasons_of", "episodes_in_season"]
 
 
 # --- Arama ----------------------------------------------------------------
-def search(net: Network, session: SessionState, query: str) -> list[Series]:
+# cValue, ana sayfadan kazınan bir arama token'ı — her aramada sayfayı yeniden
+# çekmek yerine process başına bir kez alınır (siteye giden gereksiz isteği
+# azaltır). Domain değişirse (nadir) otomatik yeniden çekilir.
+_cvalue_cache: dict[str, str] = {}
+
+
+def _cvalue(net: Network, session: SessionState) -> str:
+    cached = _cvalue_cache.get(session.base_url)
+    if cached is not None:
+        return cached
     home = net.get(session.base_url).text
     m = re.search(r'name="cValue"\s+value="([^"]+)"', home)
     cvalue = m.group(1) if m else ""
+    _cvalue_cache[session.base_url] = cvalue
+    return cvalue
+
+
+def search(net: Network, session: SessionState, query: str) -> list[Series]:
+    cvalue = _cvalue(net, session)
 
     resp = net.post(
         session.base_url + config.SEARCH_ENDPOINT,
@@ -64,8 +67,48 @@ def search(net: Network, session: SessionState, query: str) -> list[Series]:
     return out
 
 
+def suggest(net: Network, session: SessionState, query: str, limit: int = 5) -> list[Series]:
+    """Arama sonuç vermediğinde olası eşleşmeleri döndürür ("şunu mu demek istedin?").
+
+    Sorgudaki kelimeleri (en uzundan başlayarak) tek tek arayıp bulunan adayları
+    orijinal sorguya benzerliğine göre sıralar — yazım hatalarına karşı basit tolerans.
+    """
+    import difflib
+
+    words = sorted((w for w in re.split(r"\s+", query.strip()) if len(w) >= 3),
+                   key=len, reverse=True)
+
+    candidates: dict[str, Series] = {}
+    for w in words:
+        for r in search(net, session, w):
+            candidates.setdefault(r.slug, r)
+        if candidates:
+            break
+    if not candidates:
+        return []
+
+    def score(r: Series) -> float:
+        return difflib.SequenceMatcher(None, r.name.lower(), query.lower()).ratio()
+
+    ranked = sorted(candidates.values(), key=score, reverse=True)
+    return [r for r in ranked if score(r) >= 0.4][:limit]
+
+
+_MOVIE_TYPES = {"movies", "movie", "film"}
+
+
+def is_movie(series: "Series") -> bool:
+    return series.type.lower() in _MOVIE_TYPES
+
+
 # --- Bölümler -------------------------------------------------------------
 def get_episodes(net: Network, session: SessionState, series: Series) -> list[Episode]:
+    if is_movie(series):
+        # Movie'lerde /bolum/ alt sayfası yok — kaynak (data-rm-k) doğrudan
+        # filmin kendi sayfasında. Tek "bölüm" olarak filmin URL'sini döndür.
+        return [Episode(season=1, number=1, url=series.url(session.base_url),
+                        title=series.name)]
+
     html = net.get(series.url(session.base_url), referer=session.base_url).text
 
     # Tüm /bolum/ linklerini topla
@@ -139,15 +182,3 @@ def find_original_counterpart(net: Network, session: SessionState,
     return find_counterpart(net, session, dubbed, want_dubbed=False)
 
 
-def match_episode(episodes: list[Episode], season: int, number: int) -> "Episode | None":
-    """Aynı (sezon, bölüm); bulunamazsa aynı bölüm numarası."""
-    return (next((e for e in episodes if e.season == season and e.number == number), None)
-            or next((e for e in episodes if e.number == number), None))
-
-
-def seasons_of(episodes: list[Episode]) -> list[int]:
-    return sorted({e.season for e in episodes})
-
-
-def episodes_in_season(episodes: list[Episode], season: int) -> list[Episode]:
-    return [e for e in episodes if e.season == season]

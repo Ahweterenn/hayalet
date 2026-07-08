@@ -4,6 +4,6 @@ __pycache__/
 *.log
 downloads/
 .cache/
-.claude/settings.local.json
+.claude/
 reference/
 yapılcaklar.txt

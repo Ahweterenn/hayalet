@@ -5,6 +5,7 @@ curl-cffi ile istek atılır. Alınan cookie'ler SessionState'e senkronlanır.
 """
 from __future__ import annotations
 
+import random
 import time
 
 from curl_cffi import requests
@@ -20,8 +21,16 @@ class BlockedError(Exception):
 class Network:
     def __init__(self, session: SessionState):
         self.session = session
-        self._client = requests.Session(impersonate=session.impersonate)
-        self._client.headers.update(config.DEFAULT_HEADERS)
+        kwargs = {"impersonate": session.impersonate}
+        if session.proxy:
+            kwargs["proxies"] = {"http": session.proxy, "https": session.proxy}
+        self._client = requests.Session(**kwargs)
+        # User-Agent, SessionState'ten (kimlik rotasyonuyla değişebilir) alınır —
+        # config.DEFAULT_HEADERS'taki sabit değeri DEĞİL, çünkü curl-cffi ve
+        # proxy/ffmpeg'in aynı UA'yı göndermesi kritik (bkz. session.py).
+        headers = dict(config.DEFAULT_HEADERS)
+        headers["User-Agent"] = session.user_agent
+        self._client.headers.update(headers)
 
     # --- Genel API --------------------------------------------------------
     def get(self, url: str, referer: str | None = None, **kwargs):
@@ -55,14 +64,14 @@ class Network:
                 )
             except Exception as e:  # ağ hatası → tekrar dene
                 last_exc = e
-                time.sleep(1.2 * attempt)
+                time.sleep(random.uniform(0.85, 1.4) * attempt)
                 continue
 
             self._sync_cookies()
 
             if resp.status_code in (403, 429, 503):
                 last_exc = BlockedError(f"HTTP {resp.status_code} @ {url}")
-                time.sleep(1.5 * attempt)
+                time.sleep(random.uniform(1.1, 1.9) * attempt)
                 continue
 
             return resp
