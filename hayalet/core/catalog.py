@@ -27,34 +27,52 @@ __all__ = ["Series", "Episode", "search", "suggest", "is_movie", "get_episodes",
 # cValue, ana sayfadan kazınan bir arama token'ı — her aramada sayfayı yeniden
 # çekmek yerine process başına bir kez alınır (siteye giden gereksiz isteği
 # azaltır). Domain değişirse (nadir) otomatik yeniden çekilir.
-_cvalue_cache: dict[str, str] = {}
+_cvalue_cache: dict[str, tuple[str, str]] = {}
 
 
-def _cvalue(net: Network, session: SessionState) -> str:
+def _tokens(net: Network, session: SessionState) -> tuple[str, str]:
+    """Arama formundaki gizli token'lar: (cValue, cKey).
+
+    Site formda cValue'nun yanına cKey'i de ekledi; ikisi de gönderilir.
+    """
     cached = _cvalue_cache.get(session.base_url)
     if cached is not None:
         return cached
     home = net.get(session.base_url).text
-    m = re.search(r'name="cValue"\s+value="([^"]+)"', home)
-    cvalue = m.group(1) if m else ""
-    _cvalue_cache[session.base_url] = cvalue
-    return cvalue
+    v = re.search(r'name="cValue"\s+value="([^"]+)"', home)
+    k = re.search(r'name="cKey"\s+value="([^"]+)"', home)
+    tokens = (v.group(1) if v else "", k.group(1) if k else "")
+    _cvalue_cache[session.base_url] = tokens
+    return tokens
+
+
+class SearchError(Exception):
+    """Arama isteği JSON döndürmedi — endpoint/domain ölü (bkz. resolver)."""
 
 
 def search(net: Network, session: SessionState, query: str) -> list[Series]:
-    cvalue = _cvalue(net, session)
+    cvalue, ckey = _tokens(net, session)
 
+    payload = {"searchterm": query, "cValue": cvalue}
+    if ckey:
+        payload["cKey"] = ckey
     resp = net.post(
         session.base_url + config.SEARCH_ENDPOINT,
-        data={"searchterm": query, "cValue": cvalue},
+        data=payload,
         referer=session.base_url,
         headers={"X-Requested-With": "XMLHttpRequest"},
     )
     try:
         data = resp.json()
     except Exception:
-        import json
-        data = json.loads(resp.text)
+        # Ham JSONDecodeError teşhisi gizliyordu: bu noktada gelen şey neredeyse
+        # her zaman aynanın/park sayfasının HTML'i, yani "domain ölü" demek.
+        ctype = (resp.headers.get("content-type") or "?").split(";")[0]
+        raise SearchError(
+            f"Arama JSON yerine {ctype} döndürdü ({len(resp.text)} bayt) — "
+            f"{session.base_url} muhtemelen ayna/park sayfası, arama backend'i yok. "
+            f"Güncel adresi --domain ile ver ya da önbelleği temizle (--no-cache)."
+        ) from None
 
     results = (data.get("data") or {}).get("result") or []
     out: list[Series] = []
@@ -72,8 +90,10 @@ def suggest(net: Network, session: SessionState, query: str, limit: int = 5) -> 
 
     Sorgudaki kelimeleri (en uzundan başlayarak) tek tek arayıp bulunan adayları
     orijinal sorguya benzerliğine göre sıralar — yazım hatalarına karşı basit tolerans.
+    Benzerlik ölçüsü `core/query`den gelir: tire/boşluk/Türkçe karakter farkı
+    ceza saymaz ("spiderman" ≙ "Spider-Man").
     """
-    import difflib
+    from hayalet.core import query as q
 
     words = sorted((w for w in re.split(r"\s+", query.strip()) if len(w) >= 3),
                    key=len, reverse=True)
@@ -87,11 +107,8 @@ def suggest(net: Network, session: SessionState, query: str, limit: int = 5) -> 
     if not candidates:
         return []
 
-    def score(r: Series) -> float:
-        return difflib.SequenceMatcher(None, r.name.lower(), query.lower()).ratio()
-
-    ranked = sorted(candidates.values(), key=score, reverse=True)
-    return [r for r in ranked if score(r) >= 0.4][:limit]
+    ranked = q.rank(query, list(candidates.values()), min_score=0.4)
+    return ranked[:limit]
 
 
 _MOVIE_TYPES = {"movies", "movie", "film"}

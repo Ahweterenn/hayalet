@@ -14,6 +14,8 @@ import base64
 import json
 import re
 import threading
+import time
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urljoin, urlparse
@@ -127,6 +129,18 @@ user-select:none}
 #gear{right:12px;font-size:17px}
 #fsBtn{right:56px}
 #gear.hidden,#fsBtn.hidden{display:none}
+/* "Sonraki bölüm" hapı — sadece bölümün SONUNA doğru (son ~45 sn) sağ altta
+   belirir; bütün bölüm boyunca durmaz. Bölüm bitince otomatik geçiş zaten olur,
+   bu düğme son sahnede erken/manuel geçiş içindir. Sonraki bölüm yoksa (.hidden)
+   hiç görünmez; son sahne değilse (görünürlük 'show' sınıfıyla) gizli kalır. */
+#nextBtn{position:fixed;right:16px;bottom:64px;padding:9px 16px;border-radius:22px;
+background:rgba(20,20,20,.82);color:#fff;border:1px solid #6668;cursor:pointer;
+font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px;
+opacity:0;transform:translateY(8px);pointer-events:none;
+transition:opacity .25s,transform .25s,background .2s;z-index:6;user-select:none}
+#nextBtn:hover{background:rgba(210,40,40,.92)}
+#nextBtn.show{opacity:1;transform:none;pointer-events:auto}
+#nextBtn.hidden{display:none}
 /* Native tam ekran düğmesi videoyu TEK BAŞINA tam ekran yapıyor (gear/menü/
    altyazı katmanımız kayboluyor). Onu gizleyip tüm tam ekranı kendi #wrap
    düğmemiz/F tuşumuz üzerinden yönlendiriyoruz (WebKit/Blink). */
@@ -161,12 +175,13 @@ video::cue{color:transparent;background:transparent;text-shadow:none}
 <div id='bar'><span class='t' id='ttl'></span></div>
 <div id='fsBtn' class='ctlbtn' title='Tam ekran (F)'>⛶</div>
 <div id='gear' class='ctlbtn' title='Ayarlar'>⚙</div>
+<div id='nextBtn' class='hidden' title='Sonraki bölüm (N)'><span>Sonraki bölüm</span><span>⏭</span></div>
 <div id='menu' class='hidden'></div>
 <div id='capOverlay'><span id='capText'></span></div>
 </div>
 <script src='/hls.js'></script>
 <script>
-var src=__SRC__,title=__TITLE__;
+var src=__SRC__,title=__TITLE__,resume=__RESUME__;
 var v=document.getElementById('v');
 var wrap=document.getElementById('wrap');
 var gear=document.getElementById('gear');
@@ -175,6 +190,50 @@ var $=function(i){return document.getElementById(i);};
 $('ttl').textContent=title;document.title=title;
 
 var fsBtn=$('fsBtn');
+var nextBtn=$('nextBtn');
+
+// Sonraki bölüm: /next ucu sıradaki bölümün kaynağını (aynı proxy'de kurulmuş)
+// döndürür → kaynağı yerinde değiştiririz, kullanıcı terminale dönmez. hasNext,
+// URL'deki n=1 ile başlar; her geçişte /next yanıtındaki hasNext ile güncellenir.
+var hasNext=(new URLSearchParams(location.search)).get('n')==='1';
+var advancing=false;
+// Nesil sayacı: her /progress bildirimi "hangi bölüm için" olduğunu bu numarayla
+// taşır. Sunucu tarafında (cli._watch_flow) bölüm geçişi network gecikmesi
+// içerdiğinden, tarayıcının periyodik ping'i TAM geçiş sırasında eski bölümün
+// neredeyse-bitmiş zaman damgasıyla gelip YENİ bölümün kaydını kirletebiliyordu
+// (canlı test edilip doğrulandı). Sunucu, gen eşleşmeyen ping'leri artık yok sayar.
+var gen=0;
+// hasNext yoksa düğme büsbütün yok (.hidden). Varsa bile yalnızca bölümün
+// SONUNA doğru (.show) görünür — aşağıdaki timeupdate bunu yönetir.
+function updateNextBtn(){nextBtn.classList.toggle('hidden',!hasNext);
+if(!hasNext)nextBtn.classList.remove('show');}
+updateNextBtn();
+// Son ~45 sn kala düğmeyi göster; öncesinde gizle. Yeni bölüm yüklenince
+// currentTime sıfırlandığından otomatik olarak yeniden gizlenir.
+var NEXT_TAIL=45;
+v.addEventListener('timeupdate',function(){
+if(!hasNext){nextBtn.classList.remove('show');return;}
+var d=v.duration;
+var near=isFinite(d)&&d>0&&(d-v.currentTime)<=NEXT_TAIL&&v.currentTime>0;
+nextBtn.classList.toggle('show',near);
+});
+function goNext(){
+if(advancing||!hasNext)return;
+advancing=true;
+nextBtn.firstChild.textContent='Yükleniyor…';
+fetch('/next').then(function(r){return r.status===204?null:r.json();}).then(function(d){
+advancing=false;
+nextBtn.firstChild.textContent='Sonraki bölüm';
+if(!d||!d.src||d.error){hasNext=false;updateNextBtn();return;}
+title=d.title;$('ttl').textContent=title;document.title=title;
+hasNext=!!d.hasNext;updateNextBtn();
+gen=d.gen||0;
+loadStream(d.src);
+}).catch(function(){advancing=false;nextBtn.firstChild.textContent='Sonraki bölüm';});
+}
+nextBtn.onclick=function(e){e.stopPropagation();goNext();};
+// Bölüm bitince otomatik olarak sonraki bölüme geç.
+v.addEventListener('ended',function(){if(hasNext)goNext();});
 
 // Video (native denetimleri) klavye fokusunu alırsa tarayıcı kendi dahili
 // kısayollarını (boşluk/ok tuşları vb.) devreye sokuyor ve bu olaylar bizim
@@ -191,6 +250,27 @@ if(document.fullscreenElement)document.exitFullscreen();
 else if(wrap.requestFullscreen)wrap.requestFullscreen();
 }
 fsBtn.onclick=function(e){e.stopPropagation();toggleFullscreen();};
+
+// Çift tıklama ile tam ekran: tarayıcının native çift-tık davranışı yalnızca
+// <video>'yu tam ekrana alıp gear/menü/altyazı katmanını dışarıda bırakıyor.
+// İki katmanlı savunma:
+// (1) capture fazında çift-tıkı yakalayıp preventDefault ile native davranışı
+//     bastırmaya çalış, kendi toggleFullscreen'imize yönlendir;
+// (2) native yine de çıplak <video>'yu tam ekran yaparsa (bazı Chromium
+//     sürümlerinde preventDefault bunu durdurmuyor), fullscreenchange ile
+//     yakala: tam ekran öğesi wrap değil de video ise çık ve wrap'i tam ekran
+//     yap. Böylece nasıl tetiklenirse tetiklensin sonuç hep tam katmanı kapsar.
+function onDblclick(e){e.preventDefault();e.stopPropagation();toggleFullscreen();}
+v.addEventListener('dblclick',onDblclick,true);
+wrap.addEventListener('dblclick',onDblclick,true);
+document.addEventListener('fullscreenchange',function(){
+if(document.fullscreenElement===v){
+// Native çift-tık çıplak videoyu tam ekran yaptı: geri al, doğru katmanı aç.
+var re=document.exitFullscreen();
+if(re&&re.then)re.then(function(){if(wrap.requestFullscreen)wrap.requestFullscreen();});
+else if(wrap.requestFullscreen)wrap.requestFullscreen();
+}
+});
 
 // Denetimleri (bar/gear/fs düğmesi + imleç) fare hareketinde göster, hareketsiz
 // kalınca gizle. Menü açıkken asla gizlenmez. Eski :hover mantığı tam ekranda
@@ -216,8 +296,12 @@ return;
 }
 var k=e.key.toLowerCase();
 if(k==='f'||k===' '||k==='k'||k==='arrowright'||k==='arrowleft'||
-k==='arrowup'||k==='arrowdown'||k==='m')showControls();
+k==='arrowup'||k==='arrowdown'||k==='m'||k==='n')showControls();
 switch(k){
+case 'n':
+e.preventDefault();
+goNext();
+break;
 case 'f':
 e.preventDefault();
 toggleFullscreen();
@@ -450,13 +534,23 @@ addRow(SUBBG_L[k],null,subBg===k,function(){subBg=k;localStorage.setItem('subbg'
 }
 }
 
+// loadStream: bir kaynağı hls.js'e yükler. Sonraki bölüme geçişte (goNext)
+// yeniden çağrılır — önce eski Hls örneğini yok edip yenisini kurar.
+function loadStream(source){
+if(h){try{h.destroy();}catch(e){}h=null;}
 if(window.Hls&&Hls.isSupported()){
 // renderTextTracksNatively:true → cue'lar native TextTrack'lere yazılır (bize
 // activeCues verir, hls.js kendi <div> altyazı katmanını OLUŞTURMAZ). Ardından
 // track modunu 'hidden'a çekip (pollCaptions) native render'ı da kapatıyoruz;
 // altyazıyı yalnız kendi katmanımız çiziyor → asla çift görünmüyor.
-h=new Hls({subtitleDisplay:true,renderTextTracksNatively:true});
-h.loadSource(src);
+// Segmentler tek parça çok büyük olabiliyor (ör. 1080p'de ~15-20MB) ve
+// proxy üzerinden yavaş CDN'den inince varsayılan 20sn'lik fragLoadingTimeOut'a
+// takılıp iptal ediliyordu → oynatıcı sessizce donuyordu. Timeout'ları yükseltip
+// yavaş bağlantıya tolerans veriyoruz.
+h=new Hls({subtitleDisplay:true,renderTextTracksNatively:true,
+fragLoadingTimeOut:120000,manifestLoadingTimeOut:30000,levelLoadingTimeOut:30000,
+fragLoadingMaxRetry:8,manifestLoadingMaxRetry:4,levelLoadingMaxRetry:4});
+h.loadSource(source);
 h.attachMedia(v);
 h.on(Hls.Events.MANIFEST_PARSED,function(){
 v.play().catch(function(){});
@@ -466,13 +560,69 @@ h.on(Hls.Events.AUDIO_TRACKS_UPDATED,function(){if(!menu.classList.contains('hid
 h.on(Hls.Events.SUBTITLE_TRACKS_UPDATED,function(){if(!menu.classList.contains('hidden'))render();});
 if(Hls.Events.SUBTITLE_TRACK_SWITCH)h.on(Hls.Events.SUBTITLE_TRACK_SWITCH,hideNativeCues);
 h.on(Hls.Events.LEVEL_SWITCHED,function(){if(!menu.classList.contains('hidden'))render();});
+// Fatal hataları yut yerine kurtarmayı dene (aksi halde oynatıcı sessizce donuyordu):
+// ağ hatası → yeniden yükle, medya hatası → kurtar, diğer → bırak ve bildir.
+h.on(Hls.Events.ERROR,function(evt,data){
+if(!data||!data.fatal)return;
+if(data.type===Hls.ErrorTypes.NETWORK_ERROR){toast('Ağ hatası — yeniden deneniyor…');try{h.startLoad();}catch(e){}}
+else if(data.type===Hls.ErrorTypes.MEDIA_ERROR){toast('Medya hatası — kurtarılıyor…');try{h.recoverMediaError();}catch(e){}}
+else{toast('Oynatma hatası: '+((data&&data.details)||'bilinmeyen'));try{h.destroy();}catch(e){}h=null;}
+});
 }else if(v.canPlayType('application/vnd.apple.mpegurl')){
-v.src=src;
-v.addEventListener('loadedmetadata',function(){v.play().catch(function(){});});
+v.src=source;
+v.play().catch(function(){});
 gear.classList.add('hidden');
 }else{
 document.body.innerHTML='<p style=\\'color:#fff;padding:1em\\'>Tarayıcı HLS oynatamıyor.</p>';
 }
+}
+// toast: geçici durum/hata mesajı (ayrı bir <div>, inline stil — şablon CSS'ine
+// dokunmadan). Büyük segment inerken "donmuş" görünmesin diye bekleme de burada gösterilir.
+var _toastEl=null,_toastT=null;
+function toast(msg,sticky){
+if(!_toastEl){_toastEl=document.createElement('div');
+_toastEl.style.cssText='position:absolute;left:50%;bottom:12%;transform:translateX(-50%);'
++'background:rgba(0,0,0,.78);color:#fff;padding:8px 14px;border-radius:8px;font:14px system-ui,sans-serif;'
++'z-index:9999;pointer-events:none;max-width:80%;text-align:center;transition:opacity .2s';
+wrap.appendChild(_toastEl);}
+_toastEl.textContent=msg;_toastEl.style.opacity='1';
+if(_toastT){clearTimeout(_toastT);_toastT=null;}
+if(!sticky)_toastT=setTimeout(function(){if(_toastEl)_toastEl.style.opacity='0';},2500);
+}
+function hideToast(){if(_toastT){clearTimeout(_toastT);_toastT=null;}if(_toastEl)_toastEl.style.opacity='0';}
+// Video veri beklerken (ilk büyük segment inerken) bilgilendir; oynayınca gizle.
+v.addEventListener('waiting',function(){toast('Yükleniyor…',true);});
+v.addEventListener('stalled',function(){toast('Yükleniyor…',true);});
+v.addEventListener('playing',hideToast);
+v.addEventListener('canplay',hideToast);
+
+// Kaldığın yerden devam: SADECE ilk bölümün ilk yüklemesinde uygulanır (sonraki
+// bölüme geçişte — goNext/loadStream — resume=0 davranışına döner, çünkü yeni
+// bölüm zaten baştan izleniyor). loadedmetadata hem hls.js hem native Safari
+// yolunda ateşlenir, tek noktadan idare eder.
+var firstLoad=true;
+v.addEventListener('loadedmetadata',function(){
+if(!firstLoad)return;
+firstLoad=false;
+if(resume>0&&(!isFinite(v.duration)||resume<v.duration-5)){
+try{v.currentTime=resume;}catch(e){}
+}
+});
+
+// Birkaç saniyede bir oynatma konumunu proxy'ye bildir (proxy prefs.json'a yazar).
+// Proxy portu her çalıştırmada rastgele olduğundan localStorage kalıcı olmaz —
+// kalıcılık Python tarafında (bkz. cli._watch_flow on_progress). Aynı değeri
+// tekrar tekrar göndermemek için (duraklatılmışken) son gönderilenle kıyaslanır.
+var _lastSentT=-1;
+setInterval(function(){
+if(!v.duration||!isFinite(v.duration))return;
+var t=v.currentTime;
+if(Math.abs(t-_lastSentT)<1)return;
+_lastSentT=t;
+fetch('/progress?t='+t.toFixed(1)+'&d='+v.duration.toFixed(1)+'&g='+gen).catch(function(){});
+},5000);
+
+loadStream(src);
 </script></body></html>
 """
 
@@ -488,6 +638,17 @@ class HLSProxy:
         self._virtual: dict[int, tuple[str, str]] = {}
         self._vcount = 0
         self._lock = threading.Lock()
+        # Dizi izlerken "sonraki bölüm" köprüsü. actions.watch bunu bir çağrılabilire
+        # ayarlar; tarayıcı /next'e istek atınca çağrılır ve sıradaki bölümün
+        # {"src","title","hasNext"} bilgisini döndürür (None → başka bölüm yok).
+        self.next_handler = None
+        # Dakika-dakika "kaldığın yerden devam": tarayıcı birkaç saniyede bir
+        # /progress'e (currentTime, duration, nesil) bildirir; actions.watch bunu
+        # prefs.json'a yazan (t, d, g) -> None imzalı bir callback'e bağlar. Proxy
+        # portu her çalıştırmada rastgele olduğundan (localStorage origin'i port'a
+        # bağlı → kalıcı olmaz) kalıcılık burada, proxy üzerinden Python tarafında
+        # yapılır.
+        self.progress_cb = None
         # Segment/playlist istekleri arasında TCP/TLS bağlantısını paylaşır (her
         # segment için yeniden el sıkışma yapmaz) — indirme/izleme hızını artırır.
         # curl-cffi Session'ı eşzamanlı thread'lerden kullanmak güvenli (test edildi).
@@ -497,10 +658,48 @@ class HLSProxy:
             # arama/bölüm-sayfası isteklerini gizlemenin bir anlamı kalmaz.
             client_kwargs["proxies"] = {"http": session.proxy, "https": session.proxy}
         self._client = creq.Session(**client_kwargs)
+        # Kaynaktan (CDN) fiilen indirilen bayt/zaman örnekleri — ffmpeg'in yazdığı
+        # çıktı boyutundan (total_size) hesaplanan hız, segmentler tamamen tamponlanıp
+        # tek seferde gönderildiğinden ("patlama-durma") gerçek ağ hızını yansıtmaz;
+        # bu sayaç origin'den okunan gerçek bayt akışını, indirme sırasında ölçer.
+        self._dl_lock = threading.Lock()
+        self._dl_samples: deque = deque()
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.port = self.httpd.server_address[1]
         self.base = f"http://127.0.0.1:{self.port}"
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    def _record_bytes(self, n: int, start: float, end: float) -> None:
+        """Bir origin fetch'inin bayt sayısını + o fetch'in ne kadar sürdüğünü kaydeder.
+
+        Sadece bitiş anını damgalamak (bayt sayısını anlık bir noktaya iğnelemek)
+        yanlış hız verir: bir segment 3 saniyede inip ffmpeg'e tek seferde
+        boşaltılırsa, o anki "şimdi - önceki-örnek" farkı sıfıra yakın olur ve hız
+        gerçekte olduğundan onlarca kat yüksek/düşük görünür. Bunun yerine fetch'in
+        kendi süresi (start→end) kullanılır — burst'ten etkilenmez.
+        """
+        if n <= 0:
+            return
+        dur = max(end - start, 0.001)
+        with self._dl_lock:
+            self._dl_samples.append((end, dur, n))
+            while self._dl_samples and end - self._dl_samples[0][0] > 8.0:
+                self._dl_samples.popleft()
+
+    def recent_speed(self, window: float = 8.0) -> float:
+        """Son `window` saniyede origin'den fiilen indirilen bayt/sn (gerçek ağ hızı).
+
+        Her fetch'in kendi indirme süresine göre ağırlıklandırılır (bkz. _record_bytes);
+        ffmpeg'in segmenti işleyip yazması arasındaki boşluklardan etkilenmez.
+        """
+        now = time.monotonic()
+        with self._dl_lock:
+            samples = [(dur, n) for end, dur, n in self._dl_samples if now - end <= window]
+        if not samples:
+            return 0.0
+        total_bytes = sum(n for _, n in samples)
+        total_dur = sum(dur for dur, _ in samples)
+        return total_bytes / total_dur if total_dur > 0 else 0.0
 
     def virtual(self, text: str, kind: str = "m3u8") -> str:
         """Sentetik bir playlist'i barındır → yerel URL döndür (hls.js/ffmpeg çeker)."""
@@ -535,7 +734,7 @@ class HLSProxy:
             u += f"&r={_b64(referer)}"
         return u
 
-    def _player_page(self, src: str, title: str) -> str:
+    def _player_page(self, src: str, title: str, resume: float = 0.0) -> str:
         """Tarayıcıda HLS oynatan sayfa (hls.js) + sağ alttaki tek ayarlar menüsü.
 
         Tarayıcılar .m3u8'i çoğunlukla native oynatamaz; hls.js segmentleri yerel
@@ -543,11 +742,15 @@ class HLSProxy:
         SUBTITLES kanalı olarak enjekte edilir. Kalite/ses/altyazı seçimi ve
         altyazı boyut-renk ayarı, dişli ikonun açtığı katmanlı (YouTube tarzı)
         tek bir menüde toplanır — bkz. _PLAYER_TEMPLATE.
+
+        resume: ilk yüklemede (yalnızca ilk bölümde, "sonraki bölüm" geçişlerinde
+        değil) atlanacak saniye — "kaldığın yerden devam".
         """
         return (
             _PLAYER_TEMPLATE
             .replace("__SRC__", json.dumps(src))
             .replace("__TITLE__", json.dumps(title))
+            .replace("__RESUME__", json.dumps(resume))
         )
 
     def _subs_playlist(self) -> str:
@@ -653,12 +856,72 @@ class HLSProxy:
                     q = parse_qs(parsed.query)
                     src = _unb64(q["u"][0]) if "u" in q else ""
                     title = _unb64(q["t"][0]) if "t" in q else "video"
-                    body = proxy._player_page(src, title).encode()
+                    try:
+                        resume = float(q["s"][0]) if "s" in q else 0.0
+                    except ValueError:
+                        resume = 0.0
+                    body = proxy._player_page(src, title, resume).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self._safe_write(body)
+                    return
+
+                # Sonraki bölüm: tarayıcı (bölüm bitince ya da ⏭ düğmesi) burayı
+                # çağırır; advance() sıradaki bölümü aynı proxy'de çözer. Ağ işi
+                # birkaç saniye sürebilir — tarayıcı bu isteği bekler.
+                if parsed.path == "/next":
+                    result = None
+                    if proxy.next_handler:
+                        try:
+                            result = proxy.next_handler()
+                        except Exception as e:
+                            body = json.dumps({"error": str(e)}).encode()
+                            self.send_response(200)
+                            self.send_header("Content-Type",
+                                             "application/json; charset=utf-8")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.end_headers()
+                            self._safe_write(body)
+                            return
+                    if not result:
+                        self.send_response(204)        # başka bölüm yok
+                        self.end_headers()
+                        return
+                    body = json.dumps({
+                        "src": result["src"],
+                        "title": result.get("title", ""),
+                        "hasNext": bool(result.get("hasNext")),
+                        "gen": result.get("gen", 0),
+                    }).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type",
+                                     "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self._safe_write(body)
+                    return
+
+                # Kaldığın yerden devam: tarayıcı birkaç saniyede bir buraya (currentTime,
+                # duration, nesil) bildirir; actions.watch'ın bağladığı callback bunu
+                # prefs.json'a yazar. Nesil (g), bu ping'in tarayıcıda HANGİ bölüm
+                # yüklüyken gönderildiğini taşır — çağıran (cli._watch_flow) bunu kendi
+                # nesil sayacıyla karşılaştırıp bayat ping'leri (bölüm geçişi sırasında
+                # gönderilmiş, artık geçersiz) yok sayabilir. Cevap içeriği önemsiz
+                # (fire-and-forget), 204 yeterli.
+                if parsed.path == "/progress":
+                    if proxy.progress_cb:
+                        q = parse_qs(parsed.query)
+                        try:
+                            t = float(q.get("t", ["0"])[0])
+                            d = float(q.get("d", ["0"])[0])
+                            g = int(q.get("g", ["0"])[0])
+                            proxy.progress_cb(t, d, g)
+                        except (ValueError, IndexError):
+                            pass
+                    self.send_response(204)
+                    self.end_headers()
                     return
 
                 # Enjekte edilen altyazı media playlist'i
@@ -704,10 +967,10 @@ class HLSProxy:
                 # CDN segmentleri ara sıra tamamen takılıyor (curl 28: <1 byte/sec).
                 # Tek takılan segment tüm ffmpeg indirmesini düşürmesin: segmenti
                 # tampona alıp, hata olursa taze bağlantıyla birkaç kez yeniden dene.
-                import time
                 data = ctype = None
                 for attempt in range(3):
                     r = None
+                    t0 = time.monotonic()
                     try:
                         r = self._fetch(real, timeout=60, stream=True, referer=referer)
                         buf = bytearray()
@@ -716,6 +979,7 @@ class HLSProxy:
                                 buf += chunk
                         data = bytes(buf)
                         ctype = r.headers.get("content-type") or "video/mp2t"
+                        proxy._record_bytes(len(data), t0, time.monotonic())
                         break
                     except _CONN_ERR:
                         return                       # istemci gitti → bırak
@@ -747,6 +1011,7 @@ class HLSProxy:
             def _proxy_playlist(self, real, parsed, referer=None):
                 r = None
                 for attempt in range(3):
+                    t0 = time.monotonic()
                     try:
                         r = self._fetch(real, timeout=60, referer=referer)
                         break
@@ -757,10 +1022,10 @@ class HLSProxy:
                             except _CONN_ERR:
                                 pass
                             return
-                        import time
                         time.sleep(0.5 * (attempt + 1))
 
                 body = r.content
+                proxy._record_bytes(len(body), t0, time.monotonic())
                 ct = r.headers.get("content-type", "") or "application/octet-stream"
                 low = real.lower()
                 if ".m3u8" in low or body[:7] == b"#EXTM3U":

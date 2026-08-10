@@ -3,11 +3,12 @@
 Tek merkez: domain, anti-bot ayarları, dizinler, HTML seçiciler ve reklam kara listesi.
 Site değişince (seçiciler / domain) buradan güncellenir.
 """
+import os
 from pathlib import Path
 
 # --- Domain ---------------------------------------------------------------
 # Son bilinen domain; resolver bunu doğrular/override eder.
-KNOWN_DOMAIN = "https://dizipal1560.com"
+KNOWN_DOMAIN = "https://dizipal1574.com"
 
 # Güncel domaini veren yönlendirme kaynakları (resolver adımında doldurulacak).
 RESOLVER_SOURCES: list[str] = []
@@ -44,8 +45,13 @@ PACKAGE_DIR = Path(__file__).resolve().parent      # .../hayalet/hayalet
 PROJECT_ROOT = PACKAGE_DIR.parent                  # .../hayalet
 # İndirmeler kullanıcının Downloads klasörüne: diziler <Downloads>/<Dizi>/ altına,
 # filmler doğrudan <Downloads>/<Film>.mkv olarak iner (bkz. cli._out_dir/_file_title).
-DOWNLOAD_DIR = Path.home() / "Downloads"
-CACHE_DIR = PROJECT_ROOT / ".cache"
+#
+# Her ikisi de ortam değişkeniyle geçersiz kılınabilir. Sebep Android: APK'nın içi
+# salt okunurdur (PROJECT_ROOT'a yazılamaz) ve telefonda ~/Downloads diye bir yol
+# yoktur — uygulama açılışta kendi özel dizinlerini bu değişkenlerle bildirir.
+# Masaüstünde değişken tanımlı olmadığı için davranış birebir eskisi gibi kalır.
+DOWNLOAD_DIR = Path(os.environ.get("HAYALET_DOWNLOAD_DIR") or (Path.home() / "Downloads"))
+CACHE_DIR = Path(os.environ.get("HAYALET_CACHE_DIR") or (PROJECT_ROOT / ".cache"))
 
 # --- Site endpoint'leri (canlı incelemeyle doğrulandı) --------------------
 SEARCH_ENDPOINT = "/bg/searchcontent"   # POST: searchterm + cValue -> JSON

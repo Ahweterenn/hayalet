@@ -13,6 +13,7 @@ from __future__ import annotations
 import concurrent.futures
 from typing import Protocol
 
+from hayalet.core import query as q
 from hayalet.core.merge import MergedStream
 from hayalet.core.models import Episode, Series
 from hayalet.core.network import Network
@@ -66,11 +67,65 @@ def _run_all(method_name: str, contexts: dict[str, tuple[Network, SessionState]]
     return results
 
 
+# Sonuç sayısı bunun altındaysa liste "zayıf" sayılır ve yazım varyantları da
+# denenir — asıl sorgu bir şeyler bulmuş olsa bile.
+_ENOUGH_RESULTS = 5
+
+
+def search_site(adapter: SiteAdapter, net: Network, session: SessionState,
+                term: str) -> list[Series]:
+    """Tek sitede "toleranslı" arama: gerekirse alternatif yazımları da dener.
+
+    Sitelerin arama backend'i harfi harfine eşleşme arıyor (canlı: `spider-man`
+    sonuç veriyor, `spiderman` hiçbir şey döndürmüyor). Asıl sorgu yeterince iyi
+    bir sonuç vermezse `query.variants` ile bir avuç makul yazım **paralel**
+    denenir ve birleşik liste benzerliğe göre sıralanıp eşiğin altı atılır —
+    yani ağ genişler ama liste çöple dolmaz. Sorgu ilk denemede tuttuğunda
+    (yaygın durum) hiç ek istek yapılmaz.
+    """
+    results = adapter.search(net, session, term)
+    # Varyantları atlamak için TEK bir iyi sonuç yetmiyor: "spiderman" sitede
+    # sadece "Vjeran Tomic: The Spider-Man of Paris"i getiriyordu — başlık
+    # sorguyu içerdiği için puanı yüksek çıkıyor ama asıl aranan filmler listede
+    # yok. O yüzden ek koşul: liste zaten doyurucu uzunlukta olmalı.
+    if len(results) >= _ENOUGH_RESULTS and q.best_score(term, results) >= q.GOOD_SCORE:
+        return q.rank(term, results)
+
+    alts = q.variants(term)
+    if alts:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(alts)) as ex:
+            for fut in [ex.submit(adapter.search, net, session, a) for a in alts]:
+                try:
+                    results.extend(fut.result())
+                except Exception:
+                    pass  # varyantın başarısızlığı asıl sonucu götürmesin
+
+    seen: set[str] = set()
+    unique = [r for r in results
+              if not (r.slug in seen or seen.add(r.slug))]
+    return q.rank(term, unique)
+
+
 def search_all(contexts: dict[str, tuple[Network, SessionState]], query: str) -> list[Series]:
-    """Tüm sitelerde paralel arar, sonuçları birleştirir (her Series.site dolu)."""
-    return _run_all("search", contexts, query)
+    """Tüm sitelerde paralel arar, sonuçları birleştirir (her Series.site dolu).
+
+    Her site kendi içinde `search_site` ile varyant denemesi yapar; birleşik
+    liste en sonunda tek seferde sorguya benzerliğe göre sıralanır (birebir
+    eşleşmeler, hangi siteden gelirse gelsin, en üstte)."""
+    if not contexts:
+        return []
+    results: list[Series] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(contexts)) as ex:
+        futs = [ex.submit(search_site, SITES[name], net, session, query)
+                for name, (net, session) in contexts.items()]
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                results.extend(fut.result())
+            except Exception:
+                pass  # bir site başarısız olursa diğerinin sonucu yine gösterilsin
+    return q.rank(query, results)
 
 
 def suggest_all(contexts: dict[str, tuple[Network, SessionState]], query: str) -> list[Series]:
     """search_all sonuç vermediğinde tüm sitelerde paralel öneri arar."""
-    return _run_all("suggest", contexts, query)
+    return q.rank(query, _run_all("suggest", contexts, query))

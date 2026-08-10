@@ -7,3 +7,5 @@ downloads/
 .claude/
 reference/
 yapılcaklar.txt
+.pytest_cache/
+*.egg-info/

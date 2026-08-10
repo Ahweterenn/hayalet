@@ -1,4 +1,10 @@
-"""hdfilmcehennemi.nl site adapter'ı — film odaklı, dublaj/orijinal ayrımı yok.
+"""hdfilmcehennemi.nl site adapter'ı — film VE dizi, dublaj/orijinal ayrımı yok.
+
+Diziler bir dönem bilerek elenirdi ("diziler dizipal'in işi"); Dizipal'in tüm
+domain ailesi erişilemez hale gelince bu iş bölümü anlamsızlaştı. Sitenin dizi
+sayfaları film sayfalarıyla AYNI oynatıcı zincirini kullandığı için (canlı
+doğrulandı: bir bölüm URL'sine build_stream hiç değiştirilmeden uygulandı ve
+master m3u8 + Türkçe altyazı çözüldü) tek eklenen şey bölüm listeleme oldu.
 
 Zincir (canlı doğrulandı, saf Python / headless):
   1) GET /search?q=<sorgu> (header X-Requested-With: fetch) -> JSON {"results":[html,...]}
@@ -196,11 +202,6 @@ class HDFCAdapter:
                 continue
             type_m = re.search(r'<span class="type">([^<]+)</span>', frag)
             typ = type_m.group(1).strip() if type_m else "Film"
-            if typ.lower() in _SERIES_TYPES:
-                # İş bölümü: diziler dizipal'in işi. Ayrıca bu adapter'ın
-                # get_episodes/build_stream'i yalnızca film sayfası yapısını
-                # çözebiliyor — bir diziye uygulanırsa zaten patlardı.
-                continue
             slug = urlparse(href_m.group(1)).path.strip("/")
             if not slug:
                 continue
@@ -209,15 +210,72 @@ class HDFCAdapter:
         return out
 
     def suggest(self, net: Network, session: SessionState, query: str) -> list[Series]:
-        # Sitenin kendi /search'ü zaten gevşek/kısmi eşleşme döndürüyor (canlı
-        # doğrulandı) — Dizipal'deki kelime-kelime+difflib önerisine gerek yok.
-        return self.search(net, session, query)
+        """Son çare: sorguyu kelimelerine bölüp tek tek arar.
+
+        Sitenin /search'ü kısmi eşleşme döndürür ama **birebir alt dizi** arar;
+        "spiderman" hiçbir şey bulmazken "spider-man" buluyor (canlı doğrulandı).
+        `sites.search_site` zaten yazım varyantlarını deniyor; burası ondan da
+        sonra gelen adım, o yüzden sorguyu parçalayıp en uzun kelimeden başlayarak
+        ayrı ayrı aramak dışında yapacak bir şey kalmıyor.
+        """
+        from hayalet.core import query as q
+
+        words = sorted(set(q.tokens(query)), key=len, reverse=True)
+        found: dict[str, Series] = {}
+        for w in words[:3]:
+            if len(w) < 3:
+                continue
+            try:
+                for r in self.search(net, session, w):
+                    found.setdefault(r.slug, r)
+            except Exception:
+                continue
+            if found:
+                break
+        return q.rank(query, list(found.values()), min_score=0.4)
 
     def get_episodes(self, net: Network, session: SessionState,
                      series: Series) -> list[Episode]:
-        # Site salt film odaklı — sezon/bölüm yok, sentetik tek "bölüm".
-        return [Episode(season=1, number=1, url=series.url(session.base_url),
-                        title=series.name)]
+        if series.type.lower() not in _SERIES_TYPES:
+            # Film: sezon/bölüm yok, sentetik tek "bölüm".
+            return [Episode(season=1, number=1, url=series.url(session.base_url),
+                            title=series.name)]
+
+        page = net.get(series.url(session.base_url), referer=session.base_url).text
+
+        # Dizi sayfası bölüm listesini schema.org JSON-LD olarak da yayınlıyor
+        # (containsSeason -> TVSeason -> TVEpisode: seasonNumber/episodeNumber/url).
+        # Bunu tercih ediyoruz: HTML sınıf adlarından çok daha stabil, sıralı ve
+        # sezon numarasını doğrudan veriyor. JSON-LD'yi tam olarak parse etmek yerine
+        # TVEpisode bloklarını tek tek yakalıyoruz — sayfada birden çok, kimi zaman
+        # bozuk kaçışlı JSON-LD bloğu bulunabiliyor ve tek bir json.loads hepsini
+        # birden kaybettirirdi.
+        episodes: list[Episode] = []
+        seen: set[str] = set()
+        for m in re.finditer(
+                r'"@type"\s*:\s*"TVEpisode".*?"episodeNumber"\s*:\s*"?(\d+)"?'
+                r'.*?"url"\s*:\s*"([^"]+)"', page, re.S):
+            url = html.unescape(m.group(2))
+            sm = re.search(r"/sezon-(\d+)/", url)
+            if not sm or url in seen:
+                continue
+            seen.add(url)
+            episodes.append(Episode(season=int(sm.group(1)),
+                                    number=int(m.group(1)), url=url))
+
+        if not episodes:
+            # JSON-LD yoksa/değişmişse düz linklere düş: /sezon-N/bolum-M/
+            for url in re.findall(r'href="([^"]*/sezon-\d+/bolum-\d+/?)"', page):
+                url = urljoin(session.base_url, html.unescape(url))
+                if url in seen:
+                    continue
+                seen.add(url)
+                sm = re.search(r"/sezon-(\d+)/bolum-(\d+)", url)
+                episodes.append(Episode(season=int(sm.group(1)),
+                                        number=int(sm.group(2)), url=url))
+
+        episodes.sort(key=lambda e: (e.season, e.number))
+        return episodes
 
     def build_stream(self, net: Network, session: SessionState,
                      episode: Episode, series: Series) -> MergedStream:

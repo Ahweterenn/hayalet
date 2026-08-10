@@ -53,23 +53,59 @@ def _say(progress, msg: str) -> None:
         print(msg)
 
 
+def _ffprobe_path(ffmpeg_path: str) -> str | None:
+    """ffmpeg'in yanındaki ffprobe'u dener, yoksa PATH'e düşer."""
+    probe = Path(ffmpeg_path).with_name("ffprobe" + Path(ffmpeg_path).suffix)
+    if probe.exists():
+        return str(probe)
+    return shutil.which("ffprobe")
+
+
 def _ffprobe_duration(ffmpeg_path: str, url: str) -> float:
     """HLS toplam süresini ffprobe ile (segment indirmeden, EXTINF toplamı) alır."""
     import json as _json
-    probe = Path(ffmpeg_path).with_name("ffprobe" + Path(ffmpeg_path).suffix)
-    if not probe.exists():
-        p = shutil.which("ffprobe")
-        if not p:
-            return 0.0
-        probe = Path(p)
+    probe = _ffprobe_path(ffmpeg_path)
+    if not probe:
+        return 0.0
     try:
         out = subprocess.run(
-            [str(probe), "-v", "quiet", "-print_format", "json", "-show_format",
+            [probe, "-v", "quiet", "-print_format", "json", "-show_format",
              "-allowed_extensions", "ALL", url],
             capture_output=True, text=True, timeout=60).stdout
         return float((_json.loads(out).get("format") or {}).get("duration") or 0)
     except Exception:
         return 0.0
+
+
+def is_complete_download(path: Path) -> bool:
+    """Bir indirilmiş dosyanın GERÇEKTEN tam olup olmadığını doğrular.
+
+    Sadece boyuta (ya da ffprobe -show_format'ın raporladığı süreye) bakmak
+    yetmez: MKV, toplam süreyi dosyanın BAŞINDAKİ SegmentInfo'da tutar — ağ
+    kopması/Ctrl+C ile ORTASINDA kesilen bir MKV bile "declared" süreyi doğru
+    raporlayabilir (ampirik olarak doğrulandı: 15sn'lik bir dosyanın ilk %60'ı
+    bile duration=15.0 döner). Bu yüzden dosyanın gerçekten iddia ettiği SONUNA
+    kadar uzandığı, sona yakın bir kare çekmeyi deneyerek doğrulanır — kesilen
+    dosyalarda (MP4'te moov atom eksikliği, MKV'de "File ended prematurely")
+    ffmpeg ya sıfırdan farklı çıkış kodu verir ya da stderr'e yazar; tam
+    dosyalarda ikisi de temizdir.
+    """
+    try:
+        if not path.exists() or path.stat().st_size < 1_000_000:
+            return False
+    except OSError:
+        return False
+    ff = _require("ffmpeg")
+    if not ff:
+        return True                     # ffmpeg yoksa eski (yalnız boyut) davranışına düş
+    try:
+        r = subprocess.run(
+            [ff, "-v", "error", "-sseof", "-2", "-i", str(path),
+             "-frames:v", "1", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30)
+        return r.returncode == 0 and not r.stderr.strip()
+    except Exception:
+        return False
 
 
 def _fmt_speed(bps: float) -> str:
@@ -144,18 +180,15 @@ def _run_ffmpeg_progress(cmd: list[str], duration: float, on_update) -> tuple[in
 # Tarayıcı localhost'taki impersonating proxy'ye bağlanır; proxy master'ı (video +
 # ses + enjekte edilen Türkçe altyazı) curl-cffi ile çekip verir. Oynatma
 # proxy'nin sunduğu hls.js sayfasında (/player.html) yapılır.
-def watch(session: SessionState, net: Network, merged, title: str) -> int:
-    """Birleştirilmiş akışı tarayıcıda (hls.js) oynatır.
+def _build_watch_master(proxy, net: Network, session: SessionState, merged):
+    """Birleştirilmiş akıştan, proxy'de barındırılan sentetik HLS master URL'si
+    kurar. Dönüş: (yerel_master_url, ses_sayısı, altyazı_var_mı).
 
-    Dublaj + orijinal sesleri ve Türkçe altyazıyı içeren sentetik bir HLS master
-    kurulur; hls.js sayfası ses/altyazı/kalite seçicilerini otomatik doldurur.
+    Aynı proxy içinde birden çok kez çağrılabilir (bölümden bölüme geçişte yeni
+    master kurmak için) — bu yüzden watch()'tan ayrı bir yardımcıdır.
     """
-    import webbrowser
-
     from hayalet.core.m3u8_parser import list_variants
-    from hayalet.core.proxy import (HLSProxy, build_subs_playlist, _b64)
-
-    proxy = HLSProxy(session, merged.video_referer).start()
+    from hayalet.core.proxy import build_master_playlist, build_subs_playlist
 
     # Video kalite varyantları (kalite seçimi için); yoksa tek media playlist
     try:
@@ -180,19 +213,73 @@ def watch(session: SessionState, net: Network, merged, title: str) -> int:
         subs_local = proxy.virtual(build_subs_playlist(vtt), "m3u8")
         subtitle = (subs_local, "Türkçe", "tr")
 
-    from hayalet.core.proxy import build_master_playlist
     master_text = build_master_playlist(vv, audios, subtitle)
-    local_master = proxy.virtual(master_text, "m3u8")
+    return proxy.virtual(master_text, "m3u8"), len(merged.audios), bool(subtitle)
+
+
+def watch(session: SessionState, net: Network, merged, title: str,
+          advance=None, resume_at: float = 0.0, on_progress=None) -> int:
+    """Birleştirilmiş akışı tarayıcıda (hls.js) oynatır.
+
+    Dublaj + orijinal sesleri ve Türkçe altyazıyı içeren sentetik bir HLS master
+    kurulur; hls.js sayfası ses/altyazı/kalite seçicilerini otomatik doldurur.
+
+    advance verilirse (dizi izlerken): tarayıcı bölüm bitince ya da "Sonraki
+    bölüm" düğmesine basınca proxy'nin /next ucuna istek atar; advance() çağrılıp
+    sıradaki bölümün kaynağı AYNI proxy'de kurulur ve tarayıcıya döndürülür —
+    kullanıcı terminale hiç dönmeden bir sonraki bölüme geçer. advance() dönüşü:
+    {"merged": MergedStream, "title": str, "has_next": bool, "gen": int} ya da
+    None (bitti). "gen", tarayıcının /progress bildirimlerine iliştirdiği nesil
+    sayacıdır (bkz. on_progress) — advance() her başarılı geçişte bunu bir
+    ARTIRMALIDIR (0'dan başlayarak), aksi halde bölüm-geçişi sırasında gelen bayat
+    bir /progress bildirimi yanlış bölümün kaydını kirletebilir (canlı test edilip
+    doğrulanmış bir hataydı: build_stream'in ağ gecikmesi sırasında tarayıcının
+    periyodik ping'i eski bölümün neredeyse-bitmiş zaman damgasını yeni bölümün
+    kaydına yazabiliyordu).
+
+    resume_at: kaldığın yerden devam saniyesi (yalnızca ilk yüklemede uygulanır).
+    on_progress: verilirse proxy'nin /progress ucuna gelen (currentTime, duration,
+    nesil) bildirimlerinde birkaç saniyede bir çağrılır — çağıran bunu kalıcılığa
+    (prefs) bağlar VE nesil eşleşmiyorsa görmezden gelmelidir (bkz. cli._watch_flow).
+    """
+    import webbrowser
+
+    from hayalet.core.proxy import HLSProxy, _b64
+
+    proxy = HLSProxy(session, merged.video_referer).start()
+    local_master, n_aud, has_sub = _build_watch_master(proxy, net, session, merged)
+    if on_progress is not None:
+        proxy.progress_cb = on_progress
+
+    # Sonraki bölüm köprüsü: /next'e gelen isteği advance()'e bağlar (bkz. proxy).
+    has_next = advance is not None
+    if advance is not None:
+        def _next_handler():
+            nxt = advance()                 # ağ işi burada (tarayıcı isteğinin thread'inde)
+            if not nxt:
+                return None
+            src2, _, _ = _build_watch_master(proxy, net, session, nxt["merged"])
+            return {"src": src2, "title": nxt["title"],
+                    "hasNext": bool(nxt["has_next"])}
+        proxy.next_handler = _next_handler
+
     player_url = (f"{proxy.base}/player.html"
                   f"?u={_b64(local_master)}&t={_b64(title)}")
+    if has_next:
+        player_url += "&n=1"
+    if resume_at > 0:
+        player_url += f"&s={resume_at:.1f}"
 
     print(f"[▶] Tarayıcıda açılıyor: {title}  "
-          f"({len(merged.audios)} ses, altyazı {'var' if subtitle else 'yok'})")
+          f"({n_aud} ses, altyazı {'var' if has_sub else 'yok'})")
+    if has_next:
+        print("    Bölüm bitince sonraki bölüm tarayıcıda otomatik açılır "
+              "(veya ⏭ düğmesi).")
     opened = webbrowser.open(player_url)
     if not opened:
         print(f"    Tarayıcı açılamadı; elle aç:\n    {player_url}")
     try:
-        input("[i] İzleme bitince buraya dönüp Enter'a bas (yayını kapatır)... ")
+        input("[i] İzlemeyi bitirince buraya dönüp Enter'a bas (yayını kapatır)... ")
     except Exception:
         import time
         time.sleep(1800)
@@ -283,7 +370,13 @@ def download(session: SessionState, net: Network, merged, title: str,
                     "-metadata:s:s:0", "language=tur", "-metadata:s:s:0", "title=Türkçe"]
             out_file = out_dir / f"{safe}.mkv"
 
-        cmd += [str(out_file)]
+        # ffmpeg -y ile DOĞRUDAN hedef ada yazmak yerine geçici bir .part dosyasına
+        # yazıp yalnızca başarıyla bitince yeniden adlandırıyoruz: ağ kopması/Ctrl+C
+        # ile kesilen bir indirme, hedef adda yarım/bozuk bir dosya bırakıp bir
+        # sonraki çalıştırmada "zaten indirilmiş" sanılıp yanlışlıkla atlanmasın diye
+        # (bkz. cli._existing_file / actions.is_complete_download).
+        tmp_file = out_file.with_name(out_file.name + ".part")
+        cmd += [str(tmp_file)]
         info = f"({len(merged.audios)} ses, altyazı {'var' if sub_path else 'yok'})"
         err = ""
         if progress is not None and task_id is not None:
@@ -293,10 +386,14 @@ def download(session: SessionState, net: Network, merged, title: str,
             pcmd = ([ff, "-y", "-hide_banner", "-loglevel", "error",
                      "-progress", "pipe:1", "-nostats"] + cmd[2:])
             progress.update(task_id, description=f"⬇ {out_file.name} {info}")
+            # Hız için ffmpeg'in total_size'ı değil, proxy'nin origin'den fiilen
+            # okuduğu bayt/sn'yi kullanıyoruz: ffmpeg -c copy ile segmentleri tek
+            # seferde (tamponlanmış) aldığından total_size patlama-durma şeklinde
+            # ilerliyor ve gerçek ağ hızını yanlış yansıtıyordu.
             rc, err = _run_ffmpeg_progress(
                 pcmd, dur,
                 lambda pct, bps: progress.update(
-                    task_id, completed=pct, speed=_fmt_speed(bps)))
+                    task_id, completed=pct, speed=_fmt_speed(proxy.recent_speed())))
         else:
             print(f"[⬇] İndiriliyor: {out_file.name}  {info}")
             rc = subprocess.run(cmd).returncode
@@ -309,10 +406,18 @@ def download(session: SessionState, net: Network, merged, title: str,
                 pass
 
     if rc == 0:
+        try:
+            tmp_file.replace(out_file)          # atomik: yalnızca şimdi "tam" görünür
+        except OSError as e:
+            _say(progress, f"[!] İndirilen dosya yeniden adlandırılamadı: {e}")
+            logs.log.error("download rename FAIL: %s -> %s | %s",
+                           tmp_file.name, out_file.name, e)
+            return 1
         _say(progress, f"[✔] Tamamlandı: {out_file.name}")
         logs.log.info("download ok: %s (%d ses, altyazı=%s)",
                       out_file.name, len(merged.audios), bool(sub_path))
     else:
+        tmp_file.unlink(missing_ok=True)        # yarım/bozuk .part → sonraki taramada görünmesin
         _say(progress, f"[!] İndirme başarısız (ffmpeg kodu {rc}).")
         if err:
             _say(progress, f"[dim]{err.strip().splitlines()[-1] if err.strip() else ''}[/dim]")

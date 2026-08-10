@@ -17,6 +17,9 @@ dependencies = [
     "rich>=15.0",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
 [project.scripts]
 hayalet = "hayalet.cli:main"
 

@@ -28,6 +28,9 @@ def prompt_resume_series(resume: dict) -> Series | None:
     """Kayıtlı 'kaldığın yerden devam' işaretini onaylatır; onaylanırsa Series döner
     (arama yapılmadan, kayıtlı slug'dan doğrudan kurulur)."""
     label = f"{resume['series_name']} · S{int(resume['season']):02d}E{int(resume['episode']):02d}"
+    position = float(resume.get("position") or 0)
+    if position >= 20:
+        label += f"  ({int(position) // 60:02d}:{int(position) % 60:02d})"
     ok = questionary.confirm(f"Kaldığın yerden devam et: {label}?",
                              default=True, style=_STYLE).ask()
     if not ok:
@@ -121,10 +124,14 @@ def prompt_mode() -> str | None:
 _BACK = "__back__"
 
 
-def prompt_single_episode(episodes: list[Episode]) -> Episode | None:
+def prompt_single_episode(episodes: list[Episode],
+                          default_episode: int | None = None) -> Episode | None:
     choices = [questionary.Choice(e.label, value=e) for e in episodes]
     choices.append(questionary.Choice("↩ Geri", value=_BACK))
-    ans = questionary.select("Bölüm seç:", choices=choices, style=_STYLE).ask()
+    default = next((c for c, e in zip(choices, episodes)
+                    if e.number == default_episode), None)
+    ans = questionary.select("Bölüm seç:", choices=choices, default=default,
+                             style=_STYLE).ask()
     return None if ans in (None, _BACK) else ans
 
 
@@ -135,14 +142,6 @@ def prompt_multi_episodes(episodes: list[Episode]) -> list[Episode] | None:
         style=_STYLE,
     ).ask()
     return picks or None
-
-
-def prompt_next_episode(nxt: Episode) -> bool:
-    """İzleme bitince: bir sonraki bölüm otomatik açılsın mı?"""
-    return bool(questionary.confirm(
-        f"Sonraki bölüm izlensin mi: {nxt.label}?",
-        default=True, style=_STYLE,
-    ).ask())
 
 
 def prompt_continue(series_name: str | None = None) -> str:
@@ -162,3 +161,15 @@ def prompt_retry_failed(n: int) -> bool:
         f"{n} bölüm başarısız oldu. Sadece başarısızları tekrar dene?",
         default=True, style=_STYLE,
     ).ask())
+
+
+def prompt_download_dir(default_base: str, series_name: str | None) -> str | None:
+    """İndirme öncesi ANA klasörü sorar (dizi/film adı alt klasörü otomatik
+    eklenir, bkz. cli._out_dir) — varsayılan önceden dolu gelir, Enter ile
+    aynen kabul edilir. None dönerse kullanıcı iptal etti (Ctrl+C/Esc)."""
+    hint = f"  (altına '{series_name}/' klasörü açılır)" if series_name else ""
+    ans = questionary.path(
+        f"İndirilecek ana klasör{hint}:", default=default_base,
+        only_directories=True, style=_STYLE,
+    ).ask()
+    return ans or None
