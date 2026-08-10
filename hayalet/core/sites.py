@@ -37,8 +37,45 @@ class SiteAdapter(Protocol):
     def build_stream(self, net: Network, session: SessionState,
                      episode: Episode, series: Series) -> MergedStream: ...
 
+    # --- isteğe bağlı: katalog gezinme ------------------------------------
+    # Aşağıdaki ikisi Protocol'ün zorunlu parçası DEĞİL (bkz. home_rows/browse
+    # yardımcıları): destekleyen adapter uygular, desteklemeyen hiç yazmaz ve
+    # arayüz o siteyi gezinme listelerinde atlar. Böylece Dizipal gibi yalnızca
+    # arama sunan bir site için sahte/boş uygulama yazmak gerekmiyor.
+
 
 SITES: dict[str, SiteAdapter] = {}
+
+
+def home_rows(contexts: dict[str, tuple[Network, SessionState]]) -> list[dict]:
+    """Ana sayfa rafları: [{"title": "Nette İlk", "items": [Series, ...]}, ...].
+
+    Destekleyen her siteden paralel toplanır; desteklemeyen ya da hata veren
+    site sessizce atlanır (bir sitenin çökmesi ana sayfayı boşaltmasın).
+    """
+    return _collect(contexts, "home_rows")
+
+
+def browse(contexts: dict[str, tuple[Network, SessionState]], kind: str) -> list[Series]:
+    """kind = "dizi" | "film" — katalog listeleme sayfaları, arama olmadan."""
+    return _collect(contexts, "browse", kind)
+
+
+def _collect(contexts: dict[str, tuple[Network, SessionState]],
+             method: str, *args) -> list:
+    out: list = []
+    ready = {n: c for n, c in contexts.items() if hasattr(SITES[n], method)}
+    if not ready:
+        return out
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ready)) as ex:
+        futs = [ex.submit(getattr(SITES[n], method), net, session, *args)
+                for n, (net, session) in ready.items()]
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                out.extend(fut.result() or [])
+            except Exception:
+                pass
+    return out
 
 
 def register(adapter: SiteAdapter) -> None:

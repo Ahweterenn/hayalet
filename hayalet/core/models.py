@@ -15,6 +15,11 @@ class Series:
     slug: str          # örn. "series/house-md-turkce-dublaj"
     type: str = "Series"
     site: str = ""      # bu sonucu üreten adapter'ın adı (bkz. core/sites.py SITES)
+    # Gezinme (katalog) sayfalarından gelen isteğe bağlı ekstralar. Arama
+    # sonuçlarında yok, listeleme sayfalarında poster işaretlemesinde bedavaya
+    # geliyor — boş dizge "bilmiyoruz" demek, hiçbir akış bunlara bağlı değil.
+    year: str = ""
+    rating: str = ""
 
     def url(self, base_url: str) -> str:
         return f"{base_url}/{self.slug.lstrip('/')}"

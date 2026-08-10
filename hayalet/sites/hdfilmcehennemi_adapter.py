@@ -165,6 +165,34 @@ def _extract_turkish_vtt(embed_html: str, origin: str) -> str | None:
 
 _SERIES_TYPES = {"dizi", "series"}
 
+# --- katalog gezinme (ana sayfa rafları + Diziler/Filmler listeleri) --------
+# Listeleme sayfalarındaki kart işaretlemesi; ana sayfa, tür sayfaları ve
+# "Filmler"/"Diziler" listeleri AYNI kalıbı kullanıyor (canlı doğrulandı), o
+# yüzden tek ayrıştırıcı hepsine yetiyor. `title` niteliği tam (iki dilli) adı
+# taşır — kart içindeki <strong class="poster-title"> yalnız kısa adı verir.
+_POSTER_RE = re.compile(
+    r'<a\s+href="([^"]+)"[^>]*?title="([^"]*)"[^>]*?class="poster[^"]*"(.*?)</a>',
+    re.S)
+# Bazı raflar (ör. "Nette İlk", "Popüler Diziler") büyük kart yerine küçük
+# "mini-poster" kartı kullanıyor: yıl/puan yok, ad <h4> içinde.
+_MINI_RE = re.compile(
+    r'<a\s+href="([^"]+)"[^>]*?class="mini-poster"(.*?)</a>', re.S)
+_MINI_TITLE_RE = re.compile(r'class="mini-poster-title"[^>]*>([^<]+)<')
+_YEAR_RE = re.compile(r"<span>\s*(\d{4})\s*</span>")
+_IMDB_RE = re.compile(r'class="imdb"[^>]*>\s*([\d.]+)')
+_SVG_RE = re.compile(r"<svg.*?</svg>", re.S)
+# Raf başlığı: bölüm başlığı ya da (sekmeli bölümde) etkin sekmenin adı.
+_LABEL_RE = re.compile(
+    r'class="section-title"[^>]*>(.*?)</h[0-9]>'
+    r'|class="section-tab active"[^>]*>([^<]{2,60})', re.S)
+# Vizyona girmemiş yapımların arkasında video yok — rafta gösterip kullanıcıyı
+# ExtractError'a düşürmenin anlamı yok (canlı: "vizyona girmemiş film" hatası).
+_SKIP_ROWS = ("yakında",)
+# Gezinme menüsündeki liste sayfaları. Slug'lardaki sayı ekleri (-2, -5) zaman
+# içinde değişebildiği için önce ana sayfanın menüsünden okunur; bunlar yedek.
+_FALLBACK_LISTS = {"film": "/category/film-izle-2/", "dizi": "/yabancidiziizle-5/"}
+_NAV_RE = re.compile(r'<a[^>]+href="([^"]+)"[^>]*>\s*(Filmler|Diziler)\s*</a>')
+
 
 class HDFCAdapter:
     name = "hdfilmcehennemi"
@@ -233,6 +261,107 @@ class HDFCAdapter:
             if found:
                 break
         return q.rank(query, list(found.values()), min_score=0.4)
+
+    # --- katalog gezinme --------------------------------------------------
+
+    def _one(self, href: str, name: str, body: str) -> "Series | None":
+        slug = urlparse(href).path.strip("/")
+        name = html.unescape(name or "").strip()
+        if not slug or not name:
+            return None
+        y = _YEAR_RE.search(body)
+        r = _IMDB_RE.search(body)
+        return Series(
+            name=name, slug=slug,
+            # Dizi sayfalari /dizi/<slug> altinda; tur bundan kesin belli.
+            type="Dizi" if slug.startswith("dizi/") else "Film",
+            site=self.name,
+            year=y.group(1) if y else "",
+            rating=r.group(1) if r else "")
+
+    def _cards(self, html_text: str) -> list[tuple[int, Series]]:
+        """Sayfadaki tum kartlar, GORUNME SIRASINA gore (konum, Series).
+
+        Iki kart bicimi var (buyuk `poster`, kucuk `mini-poster`); ikisi de ayni
+        sayfada karisik duruyor, o yuzden konuma gore birlestiriliyor — raflara
+        bolerken sira onemli (bkz. home_rows).
+        """
+        found: list[tuple[int, Series]] = []
+        for m in _POSTER_RE.finditer(html_text):
+            s = self._one(m.group(1), m.group(2), m.group(3))
+            if s:
+                found.append((m.start(), s))
+        for m in _MINI_RE.finditer(html_text):
+            tm = _MINI_TITLE_RE.search(m.group(2))
+            s = self._one(m.group(1), tm.group(1) if tm else "", m.group(2))
+            if s:
+                found.append((m.start(), s))
+        found.sort(key=lambda p: p[0])
+        return found
+
+    def _posters(self, html_text: str) -> list[Series]:
+        out: list[Series] = []
+        seen: set[str] = set()
+        for _, s in self._cards(html_text):
+            if s.slug in seen:
+                continue
+            seen.add(s.slug)
+            out.append(s)
+        return out
+
+    def home_rows(self, net: Network, session: SessionState) -> list[dict]:
+        """Ana sayfa rafları: [{"title": ..., "items": [Series, ...]}, ...].
+
+        Bölüm başlıkları ve kartlar aynı akışta duruyor; her kartı KENDİNDEN
+        ÖNCEKİ en yakın başlığa bağlıyoruz. Sayfanın iç içe kutu yapısını
+        ayrıştırmaktan daha dayanıklı: site sarmalayıcı div'lerini değiştirse
+        bile başlık→kart sırası bozulmuyor.
+        """
+        page = _SVG_RE.sub("", net.get(session.base_url, referer=session.base_url).text)
+
+        labels = []
+        for m in _LABEL_RE.finditer(page):
+            raw = m.group(1) if m.group(1) is not None else m.group(2)
+            text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw)).strip()
+            if text:
+                labels.append((m.start(), html.unescape(text)))
+
+        rows: dict[str, list[Series]] = {}
+        order: list[str] = []
+        for pos, item in self._cards(page):
+            title = "Öne çıkanlar"
+            for lpos, text in labels:
+                if lpos < pos:
+                    title = text
+                else:
+                    break
+            if any(s in title.lower() for s in _SKIP_ROWS):
+                continue
+            if title not in rows:
+                rows[title] = []
+                order.append(title)
+            # Ayni yapim birden cok rafta cikabiliyor; raf ICINDE tekrar olmasin.
+            if any(s.slug == item.slug for s in rows[title]):
+                continue
+            rows[title].append(item)
+
+        return [{"title": t, "items": rows[t]} for t in order if rows[t]]
+
+    def _list_url(self, net: Network, session: SessionState, kind: str) -> str:
+        page = net.get(session.base_url, referer=session.base_url).text
+        want = "Diziler" if kind == "dizi" else "Filmler"
+        for href, label in _NAV_RE.findall(page):
+            if label == want:
+                return href
+        return session.base_url + _FALLBACK_LISTS[kind]
+
+    def browse(self, net: Network, session: SessionState, kind: str) -> list[Series]:
+        """Diziler / Filmler listeleme sayfası — arama olmadan katalog."""
+        if kind not in ("dizi", "film"):
+            return []
+        url = self._list_url(net, session, kind)
+        page = _SVG_RE.sub("", net.get(url, referer=session.base_url).text)
+        return self._posters(page)
 
     def get_episodes(self, net: Network, session: SessionState,
                      series: Series) -> list[Episode]:
