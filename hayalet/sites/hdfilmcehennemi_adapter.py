@@ -192,6 +192,10 @@ _SKIP_ROWS = ("yakında",)
 # içinde değişebildiği için önce ana sayfanın menüsünden okunur; bunlar yedek.
 _FALLBACK_LISTS = {"film": "/category/film-izle-2/", "dizi": "/yabancidiziizle-5/"}
 _NAV_RE = re.compile(r'<a[^>]+href="([^"]+)"[^>]*>\s*(Filmler|Diziler)\s*</a>')
+# Tür sayfaları: ana sayfadaki "Türlerine Göre Filmler" bölümünden okunur —
+# slug'lardaki sayı ekleri (-7, -844) zaman içinde değiştiği için elle liste
+# tutmak bakım yükü olurdu. Adı "... Filmleri" ekinden temizleyip gösteriyoruz.
+_GENRE_RE = re.compile(r'<a[^>]+href="([^"]*/tur/[^"]+)"[^>]*>([^<]{2,40}?)\s*Filmleri\s*</a>')
 
 
 class HDFCAdapter:
@@ -360,6 +364,26 @@ class HDFCAdapter:
         if kind not in ("dizi", "film"):
             return []
         url = self._list_url(net, session, kind)
+        page = _SVG_RE.sub("", net.get(url, referer=session.base_url).text)
+        return self._posters(page)
+
+    def genres(self, net: Network, session: SessionState) -> list[dict]:
+        """Tür listesi: [{"name": "Aksiyon", "url": "..."}, ...]."""
+        page = net.get(session.base_url, referer=session.base_url).text
+        out: list[dict] = []
+        seen: set[str] = set()
+        for href, name in _GENRE_RE.findall(page):
+            name = html.unescape(name).strip()
+            key = name.lower()
+            # Site aynı türü birden çok slug'la listeleyebiliyor (ör. iki ayrı
+            # "Müzik Filmleri"); ilki yeter.
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            out.append({"name": name, "url": urljoin(session.base_url, href)})
+        return out
+
+    def by_genre(self, net: Network, session: SessionState, url: str) -> list[Series]:
         page = _SVG_RE.sub("", net.get(url, referer=session.base_url).text)
         return self._posters(page)
 
