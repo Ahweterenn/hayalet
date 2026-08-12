@@ -4,8 +4,12 @@ Tüm gerçek iş zaten `core/catalog.py`, `core/resolver.py`, `core/merge.py`'de
 var; bu dosya sadece onları SiteAdapter arayüzüne uydurur. Var olan Dizipal
 davranışının birebir aynı kalmasını garantilemek için buraya yeni mantık
 EKLENMEZ — iki istisna dışında: (1) çoklu-site aramada sonucun kaynağını ayırt
-etmek için Series.site damgalama, (2) iş bölümü gereği "Movies" tipi sonuçların
-elenmesi (filmler hdfilmcehennemi'nin işi — bkz. search/suggest).
+etmek için Series.site damgalama, (2) aynı yapımın "X" / "X Türkçe Dublaj"
+kayıtlarının tek satıra indirilmesi (bkz. _collapse_dubs).
+
+Not: Burada bir zamanlar "Movies" tipi sonuçlar da eleniyordu (filmler
+hdfilmcehennemi'nin işi diye). O süzgeç KALDIRILDI — yalnızca Dizipal'de bulunan
+Türk filmlerini tamamen erişilemez kılıyordu; gerekçesi bkz. search().
 """
 from __future__ import annotations
 
@@ -46,11 +50,16 @@ def _collapse_dubs(results: list[Series]) -> list[Series]:
     dublajı olan yapım elenmez, olduğu gibi kalır. Bu ELEME BİLEREK adapter
     katmanında: `catalog.search` her iki kaydı da döndürmeye devam etmeli, yoksa
     `catalog.find_counterpart` eşleştiremez.
+
+    Anahtara film/dizi ayrımı da giriyor: Dizipal'de aynı ada sahip AYRI bir
+    dizi ve film olabiliyor ("Sıfır Bir" hem dizi hem film) — bunlar tekrar
+    değil, iki farklı yapım; birleştirilirse biri kaybolur.
     """
-    order: list[str] = []
-    picked: dict[str, Series] = {}
+    order: list[tuple[bool, str]] = []
+    picked: dict[tuple[bool, str], Series] = {}
     for r in results:
-        key = catalog.base_title(r.name).casefold() or r.slug
+        key = (bool(catalog.is_movie(r)),
+               catalog.base_title(r.name).casefold() or r.slug)
         if key not in picked:
             order.append(key)
             picked[key] = r
@@ -67,19 +76,24 @@ class DizipalAdapter:
                        override: str | None = None, use_cache: bool = True) -> str:
         return resolver.resolve(net, session, override=override, use_cache=use_cache)
 
+    # Dizipal'in "Movies" kategorisi ARTIK ELENMİYOR. Eskiden "filmler
+    # hdfilmcehennemi'nin işi, aynı film iki kaynaktan çıkıp kafa karıştırmasın"
+    # diye atılıyordu; ama bu gerekçe yalnızca iki sitede birden bulunan filmler
+    # için geçerli. Türk filmleri (Sıfır Bir, Adana İşi, Çakallarla Dans…)
+    # hdfilmcehennemi'de HİÇ yok — canlı doğrulandı — yani süzgeç onları tamamen
+    # erişilemez kılıyordu ("dizisi çıkıyor, filmi çıkmıyor" şikayeti). Kayıtlar
+    # boru hattında sağlam çalışıyor: get_episodes tek bölüm veriyor,
+    # build_stream gerçek master.m3u8 çözüyor (canlı doğrulandı). Aynı yapımın
+    # iki siteden birden çıkması zaten dizilerde de oluyor ve zararsız — üstelik
+    # bir kaynak ölüyse diğeri elde kalıyor.
     def search(self, net: Network, session: SessionState, query: str) -> list[Series]:
-        # İş bölümü: filmler hdfilmcehennemi'nin işi, dizipal yalnızca dizi döndürür
-        # (Dizipal'in kendi "Movies" kategorisi elenir — aksi halde çift-site
-        # aramada aynı film iki kaynaktan da çıkıp kafa karıştırırdı).
-        results = _collapse_dubs(
-            [r for r in catalog.search(net, session, query) if not catalog.is_movie(r)])
+        results = _collapse_dubs(catalog.search(net, session, query))
         for r in results:
             r.site = self.name
         return results
 
     def suggest(self, net: Network, session: SessionState, query: str) -> list[Series]:
-        results = _collapse_dubs(
-            [r for r in catalog.suggest(net, session, query) if not catalog.is_movie(r)])
+        results = _collapse_dubs(catalog.suggest(net, session, query))
         for r in results:
             r.site = self.name
         return results
