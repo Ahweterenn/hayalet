@@ -151,12 +151,56 @@ def search_site(adapter: SiteAdapter, net: Network, session: SessionState,
     return q.rank(term, unique)
 
 
+# Aynı yapım iki sitede birden bulunduğunda hangi kaynak tercih edilir.
+# Kullanıcının kurgusu: **filmler hdfilmcehennemi, diziler Dizipal**. Bu bir
+# TERCİH, süzgeç değil — aradaki fark önemli: eskiden Dizipal'in "Movies"
+# kayıtları adapter'da tamamen atılıyordu ve yalnızca orada bulunan Türk
+# filmleri (Sıfır Bir, Adana İşi…) hiçbir şekilde erişilemiyordu. Artık tekrar
+# asıl yerinde, birleştirme anında çözülüyor: iki kaynakta da varsa tercih
+# edilen site kazanır, tek kaynakta varsa o kayıt olduğu gibi kalır.
+_PREFERRED_SITE = {True: "hdfilmcehennemi", False: "dizipal"}  # is_movie -> site
+
+
+def _dedupe_cross_site(results: list[Series]) -> list[Series]:
+    """Aynı yapımın farklı sitelerden gelen kopyalarını tek satıra indirir.
+
+    Eşleşme `query.keys` üzerinden: katlanmış/gürültüsüz başlık, çok dilli ad
+    parçaları dahil — "The Matrix 2 - The Matrix Reloaded" ile "The Matrix
+    Reloaded" aynı yapımdır. Film ve dizi anahtarları AYRI tutulur: Dizipal'de
+    "Sıfır Bir" hem dizi hem film olarak var ve bunlar tekrar değil.
+    """
+    from hayalet.core import catalog
+
+    groups: list[list] = []          # [anahtar kümesi, seçilen Series]
+    where: dict[tuple[bool, str], int] = {}
+    for r in results:
+        movie = bool(catalog.is_movie(r))
+        ks = {(movie, k) for k in q.keys(r.name)}
+        if not ks:
+            groups.append([set(), r])
+            continue
+        idx = next((where[k] for k in ks if k in where), None)
+        if idx is None:
+            groups.append([ks, r])
+            idx = len(groups) - 1
+        else:
+            groups[idx][0] |= ks
+            want = _PREFERRED_SITE.get(movie)
+            # Tercih edilen kaynak sonradan geldiyse onunla değiştir.
+            if r.site == want and groups[idx][1].site != want:
+                groups[idx][1] = r
+        for k in ks:
+            where.setdefault(k, idx)
+    return [g[1] for g in groups]
+
+
 def search_all(contexts: dict[str, tuple[Network, SessionState]], query: str) -> list[Series]:
     """Tüm sitelerde paralel arar, sonuçları birleştirir (her Series.site dolu).
 
     Her site kendi içinde `search_site` ile varyant denemesi yapar; birleşik
-    liste en sonunda tek seferde sorguya benzerliğe göre sıralanır (birebir
-    eşleşmeler, hangi siteden gelirse gelsin, en üstte)."""
+    listeden önce aynı yapımın site kopyaları elenir (`_dedupe_cross_site`),
+    sonra tek seferde sorguya benzerliğe göre sıralanır (birebir eşleşmeler,
+    hangi siteden gelirse gelsin, en üstte)."""
     if not contexts:
         return []
     results: list[Series] = []
@@ -168,9 +212,9 @@ def search_all(contexts: dict[str, tuple[Network, SessionState]], query: str) ->
                 results.extend(fut.result())
             except Exception:
                 pass  # bir site başarısız olursa diğerinin sonucu yine gösterilsin
-    return q.rank(query, results)
+    return q.rank(query, _dedupe_cross_site(results))
 
 
 def suggest_all(contexts: dict[str, tuple[Network, SessionState]], query: str) -> list[Series]:
     """search_all sonuç vermediğinde tüm sitelerde paralel öneri arar."""
-    return q.rank(query, _run_all("suggest", contexts, query))
+    return q.rank(query, _dedupe_cross_site(_run_all("suggest", contexts, query)))

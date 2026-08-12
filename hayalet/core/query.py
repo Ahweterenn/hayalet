@@ -97,6 +97,25 @@ def alt_titles(title: str) -> list[str]:
     return [title] + parts if len(parts) > 1 else [title]
 
 
+def key(text: str) -> str:
+    """İki başlığın "aynı yapım" sayılması için kıyaslanacak biçim.
+
+    Katlanmış + gürültüsüz + boşluksuz: 'Adana isi', 'Adana İşi' ve
+    'Adana İşi Türkçe Dublaj' aynı anahtarı verir. Çoklu-site birleştirmede
+    tekrarları yakalamak için kullanılır (bkz. sites._dedupe_cross_site).
+    """
+    return squash(_clean(text))
+
+
+def keys(title: str) -> set[str]:
+    """Bir başlığın tüm eşleşme anahtarları (çok dilli ad parçaları dahil).
+
+    hdfilmcehennemi "The Matrix 2 - The Matrix Reloaded" derken Dizipal sadece
+    "The Matrix Reloaded" diyor; ortak bir ad parçası varsa aynı yapımdır.
+    """
+    return {k for k in (key(t) for t in alt_titles(title)) if k}
+
+
 def _word_hit(word: str, title_words: set[str]) -> bool:
     """Kelime başlıkta geçiyor mu — Türkçe ekleri affederek.
 
