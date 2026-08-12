@@ -121,11 +121,19 @@ def search_site(adapter: SiteAdapter, net: Network, session: SessionState,
     (yaygın durum) hiç ek istek yapılmaz.
     """
     results = adapter.search(net, session, term)
-    # Varyantları atlamak için TEK bir iyi sonuç yetmiyor: "spiderman" sitede
-    # sadece "Vjeran Tomic: The Spider-Man of Paris"i getiriyordu — başlık
-    # sorguyu içerdiği için puanı yüksek çıkıyor ama asıl aranan filmler listede
-    # yok. O yüzden ek koşul: liste zaten doyurucu uzunlukta olmalı.
-    if len(results) >= _ENOUGH_RESULTS and q.best_score(term, results) >= q.GOOD_SCORE:
+    best = q.best_score(term, results)
+    # Aranan şey **birebir** bulunduysa varyant atmak zararlı: "the last of us"
+    # sitede tek sonuçla ve 1.00 puanla geliyordu, ama liste kısa diye geniş ağ
+    # atılınca yanına 16 tane 'The Last ...' ekleniyordu. Uzunluk artık puana
+    # yansıdığı için (bkz. query._score_one) bu "birebir" ölçüsü güvenilir:
+    # 'Vjeran Tomic: The Spider-Man of Paris' eşiğin çok altında kalır.
+    if best >= q.EXACT_SCORE:
+        return q.rank(term, results)
+    # Birebir olmayan iyi sonuçlarda TEK bir iyi sonuç yetmiyor: "spiderman"
+    # sitede sadece "Vjeran Tomic: The Spider-Man of Paris"i getiriyordu —
+    # başlık sorguyu içerdiği için puanı yüksek çıkıyor ama asıl aranan filmler
+    # listede yok. O yüzden ek koşul: liste zaten doyurucu uzunlukta olmalı.
+    if len(results) >= _ENOUGH_RESULTS and best >= q.GOOD_SCORE:
         return q.rank(term, results)
 
     alts = q.variants(term)

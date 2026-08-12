@@ -120,6 +120,81 @@ def test_best_score_bos_listede_sifir():
     assert q.best_score("spiderman", []) == 0.0
 
 
+# --- puanın uzunluğa duyarlılığı -------------------------------------------
+# Canlı şikayet: "dizinin adını yazıyorum, başka şeyler çıkıyor". Sebebi puanın
+# doymasıydı — sorguyu İÇEREN her başlık sabit 0.90 alıyordu, "gibi" araması 29
+# sonucun hepsini aynı puana oturtuyordu. Artık fazlalık uzunluk puanı düşürür.
+def test_iceren_baslik_fazlaligi_kadar_puan_kaybeder():
+    tam = q.score("dark", "Dark")
+    az_fazla = q.score("dark", "Dark Places")
+    cok_fazla = q.score("dark", "The Dark Money Game")
+    assert tam == 1.0
+    assert tam > az_fazla > cok_fazla >= q.MIN_SCORE
+
+
+def test_ayni_kelimeyi_iceren_basliklar_ayni_puani_almaz():
+    # Eskiden dördü de 0.90 alıyordu; artık puan başlıktaki fazlalıkla azalıyor,
+    # yani sıralama anlamlı. (Aynı uzunluktaki başlıkların eşit puan alması
+    # doğaldır — iddia "hepsi farklı" değil, "kısa olan öne geçer".)
+    basliklar = ["Patron Gibi", "Krallar Gibi Yaşa",
+                 "Ne Zaman Her Şey Eskisi Gibi Olacak"]
+    puanlar = [q.score("gibi", b) for b in basliklar]
+    assert puanlar == sorted(puanlar, reverse=True)
+    assert len(set(puanlar)) == len(basliklar)
+    assert all(p < q.score("gibi", "Gibi") for p in puanlar)
+
+
+# --- çok dilli başlıklar (hdfilmcehennemi tek alanda 2-3 dil taşıyor) -------
+def test_cok_dilli_baslikta_tutan_ad_parcasi_gecerli():
+    ad = "Kara Şövalye - The Dark Knight"
+    assert q.score("the dark knight", ad) == 1.0
+    assert q.score("kara sovalye", ad) == 1.0
+
+
+def test_alt_titles_yalnizca_bosluklu_ayracta_boler():
+    # 'Spider-Man'in tiresi ad parçası ayracı DEĞİL.
+    assert q.alt_titles("Spider-Man") == ["Spider-Man"]
+    assert "The Dark Knight" in q.alt_titles("Kara Şövalye - The Dark Knight")
+
+
+def test_devam_filmi_alt_baslik_ayraci_ile_bolunmez():
+    # ':' bölseydi 'No Way Home' ayrı ad parçası olur ve devam filmi birebir
+    # eşleşme puanı alırdı.
+    assert q.score("spiderman", "Spider-Man: No Way Home") < 1.0
+
+
+# --- kuyruk kesimi ---------------------------------------------------------
+def test_net_kazanan_varken_kuyruk_kesilir():
+    results = [_s("Dark"), _s("Dark Places"), _s("The Dark Wizard"),
+               _s("The Dark Money Game"), _s("Dark Minds"), _s("Dark Frequency"),
+               _s("Echoes in the Dark"), _s("Dark Side Of Night"),
+               _s("The Bleeding Dark"), _s("Bad Influence The Dark Side")]
+    kept = q.rank("dark", results)
+    assert kept[0].name == "Dark"
+    assert len(kept) <= q.MIN_KEEP < len(results)
+
+
+def test_kesim_devam_filmlerini_silip_listeyi_tek_satira_indirmez():
+    results = [_s("Spider-Man"), _s("Spider-Man 2"), _s("Spider-Man 3"),
+               _s("Spider-Man: No Way Home")]
+    kept = q.rank("spiderman", results)
+    assert kept[0].name == "Spider-Man"
+    assert len(kept) == len(results)
+
+
+def test_zayif_liste_kirpilir():
+    # Hiçbiri eşiği geçemiyor: yine de bir şeyler gösterilir ama sayfa dolusu değil.
+    results = [_s("Alakasız %d" % i) for i in range(20)]
+    assert len(q.rank("spiderman", results)) == q.WEAK_LIMIT
+
+
+def test_iki_kelimelik_sorguda_tek_kelime_tutmasi_yetmez():
+    # "the last of us" -> 'The Last Rodeo' canlıda 16 çöp satırın kaynağıydı.
+    results = [_s("The Last of Us"), _s("The Last Rodeo"), _s("The Last Kumite"),
+               _s("The Last Frontier")]
+    assert [r.name for r in q.rank("the last of us", results)] == ["The Last of Us"]
+
+
 # --- coverage: çok kelimeli sorguda "tek kelimesi tutan" sonuçları ayıklama --
 # Canlı gözlem: varyantlar doğru filmi buluyordu ama yanında "orumcek adam" ->
 # 'Adam'/'Black Adam', "breaking bad" -> 'Break'/'Break In' gibi çöp de geliyordu.

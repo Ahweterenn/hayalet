@@ -70,6 +70,33 @@ def _meaningful(text: str) -> list[str]:
     return [t for t in tokens(text) if t not in _NOISE and t not in _STOP]
 
 
+def _clean(text: str) -> str:
+    """Gürültü ekleri atılmış karşılaştırma biçimi.
+
+    'House M.D. Türkçe Dublaj' -> 'house m d'. Puanlama uzunluğa duyarlı
+    olduğu için (aşağıya bakınız) bu ekler temizlenmezse birebir eşleşen bir
+    başlık sırf uzun diye ceza yerdi.
+    """
+    words = [w for w in normalize(text).split() if w not in _NOISE]
+    return " ".join(words) or normalize(text)
+
+
+# hdfilmcehennemi tek bir `name` alanında birkaç dildeki adı birden taşıyor:
+# "Örümcek Adam Yepyeni Bir Gün - Spider Man Brand New Day - Spider-Man: Brand
+# New Day". Böyle bir adı tek parça sayarsak uzunluk cezası haksız yere vurur
+# (bkz. score); parçalara ayırıp en iyi tutan parçaya bakıyoruz.
+# Yalnızca **boşlukla çevrili** ayraçta bölünür: 'Spider-Man'in tiresi bölmez.
+# ':' bilerek listede YOK — 'Spider-Man: No Way Home' bölünseydi devam filmi
+# birebir eşleşme puanı alırdı.
+_ALT_SPLIT_RE = re.compile(r"\s+[-–—|]\s+")
+
+
+def alt_titles(title: str) -> list[str]:
+    """Başlığın karşılaştırılabilir biçimleri: bütünü + çok dilli ad parçaları."""
+    parts = [p.strip() for p in _ALT_SPLIT_RE.split(title) if p.strip()]
+    return [title] + parts if len(parts) > 1 else [title]
+
+
 def _word_hit(word: str, title_words: set[str]) -> bool:
     """Kelime başlıkta geçiyor mu — Türkçe ekleri affederek.
 
@@ -87,6 +114,14 @@ def _word_hit(word: str, title_words: set[str]) -> bool:
                for t in title_words)
 
 
+def _coverage_one(q_words: list[str], title: str) -> float:
+    t_words = set(_meaningful(title))
+    total = sum(len(w) for w in q_words)
+    if not total:
+        return 1.0
+    return sum(len(w) for w in q_words if _word_hit(w, t_words)) / total
+
+
 def coverage(query: str, title: str) -> float:
     """Sorgunun kaçta kaçı (harf ağırlıklı) başlıkta karşılık buluyor.
 
@@ -97,21 +132,20 @@ def coverage(query: str, title: str) -> float:
     q_words = _meaningful(query)
     if len(q_words) < 2:
         return 1.0
-    t_words = set(_meaningful(title))
-    total = sum(len(w) for w in q_words)
-    if not total:
-        return 1.0
-    return sum(len(w) for w in q_words if _word_hit(w, t_words)) / total
+    return max(_coverage_one(q_words, t) for t in alt_titles(title))
 
 
-def score(query: str, title: str) -> float:
-    """0..1 arası benzerlik. Boşluk/tire/Türkçe karakter farkını cezalandırmaz.
+# Sorgu başlığın içinde geçiyorsa taban puan buradan başlar; üstüne eklenen pay
+# sorgunun başlığın NE KADARINI açıkladığıyla orantılıdır. Sabit bir taban
+# (eskiden 0.90) her "içinde geçen" başlığa aynı puanı veriyordu: "gibi" araması
+# 29 sonucun hepsini 0.90'a oturtup birebir eşleşmenin öne çıkmasını
+# engelliyordu — kullanıcının gördüğü "dizinin adını yazıyorum, başka şeyler
+# çıkıyor" tablosunun asıl sebebi buydu.
+_CONTAIN_FLOOR = 0.55
 
-    'spiderman' ile 'Spider-Man' 1.0 verir; 'spiderman' ile 'Spider-Man'in
-    devam filmi 'Spider-Man: No Way Home' yüksek ama 1.0'ın altında kalır —
-    böylece birebir eşleşme listenin başına çıkar.
-    """
-    sq, st = squash(query), squash(title)
+
+def _score_one(query: str, title: str) -> float:
+    sq, st = squash(_clean(query)), squash(_clean(title))
     if not sq or not st:
         return 0.0
     if sq == st:
@@ -120,22 +154,39 @@ def score(query: str, title: str) -> float:
     ratio = difflib.SequenceMatcher(None, sq, st).ratio()
 
     # Sorgu, başlığın içinde bir bütün olarak geçiyorsa (alt seri / devam filmi)
-    # difflib uzunluk farkı yüzünden haksızca düşük puan veriyor; tabanı yükselt.
+    # difflib uzunluk farkı yüzünden haksızca düşük puan veriyor; tabanı yükselt
+    # — ama başlıkta ne kadar fazlalık varsa o kadar az. 'dark' için:
+    # 'Dark Places' 0.71, 'The Dark Money Game' 0.65, 'Dark' 1.00.
     if sq in st:
-        ratio = max(ratio, 0.95 - 0.15 * (len(st) - len(sq)) / len(st))
+        ratio = max(ratio, _CONTAIN_FLOOR + 0.40 * len(sq) / len(st))
     elif st in sq:
-        ratio = max(ratio, 0.85)
+        ratio = max(ratio, _CONTAIN_FLOOR + 0.25 * len(st) / len(sq))
 
     # Kelime bazlı örtüşme: 'yuzuklerin efendisi kralin donusu' gibi uzun
     # başlıklarda karakter benzerliği düşerken kelimeler tam tutuyor olabilir.
     q_words, t_words = set(_meaningful(query)), set(_meaningful(title))
     if q_words and q_words <= t_words:
-        ratio = max(ratio, 0.9)
+        share = sum(len(w) for w in q_words) / max(sum(len(w) for w in t_words), 1)
+        ratio = max(ratio, _CONTAIN_FLOOR + 0.35 * share)
     elif q_words and t_words:
         overlap = len(q_words & t_words) / len(q_words)
         ratio = max(ratio, 0.55 * overlap + 0.35 * ratio)
 
     return min(ratio, 1.0)
+
+
+def score(query: str, title: str) -> float:
+    """0..1 arası benzerlik. Boşluk/tire/Türkçe karakter farkını cezalandırmaz.
+
+    'spiderman' ile 'Spider-Man' 1.0 verir; 'spiderman' ile 'Spider-Man'in
+    devam filmi 'Spider-Man: No Way Home' yüksek ama 1.0'ın altında kalır —
+    böylece birebir eşleşme listenin başına çıkar.
+
+    Çok dilli başlıklarda (bkz. `alt_titles`) en iyi tutan ad parçası geçerlidir:
+    "Kara Şövalye - The Dark Knight" sorgunun hangi dilde yazıldığına
+    bakmaksızın tam puan alır.
+    """
+    return max(_score_one(query, t) for t in alt_titles(title))
 
 
 # --- Varyant üretimi -------------------------------------------------------
@@ -224,29 +275,53 @@ def variants(query: str, limit: int = MAX_VARIANTS) -> list[str]:
 MIN_SCORE = 0.45
 # Asıl arama bu kadar iyi bir sonuç verdiyse varyantlara hiç gerek yok.
 GOOD_SCORE = 0.72
+# Birebir (ya da bir tık altı) eşleşme: aranan şey bulunmuş sayılır. Bu varken
+# geniş ağ atmak listeyi bozmaktan başka işe yaramaz — bkz. sites.search_site.
+EXACT_SCORE = 0.95
 # Çok kelimeli sorgularda başlığın karşılaması gereken en az kapsama. Geniş ağ
 # atılan varyantlardan ("adam", "break") gelen tek-kelime eşleşmelerini eler.
-MIN_COVERAGE = 0.6
+# 0.60 fazla gevşekti: iki kelimelik sorguda uzun olan kelimenin tek başına
+# tutması yetiyordu ("the last of us" -> 'The Last Rodeo', 'The Last Kumite'...).
+MIN_COVERAGE = 0.75
+# Listenin başında bu kadar iyi bir eşleşme varsa, ondan LEAD_BAND kadar geride
+# kalanlar kuyruk gürültüsü sayılır ("dark" -> 'The Dark Money Game').
+STRONG_SCORE = 0.9
+LEAD_BAND = 0.15
+# Ama liste bir anda tek satıra da inmesin: kesim uygulansa bile en iyi
+# sıradakilerle bu sayıya kadar doldurulur (devam filmleri/seriler elde kalsın).
+MIN_KEEP = 6
+# Hiçbir sonuç eşiği geçemediğinde gösterilecek "belki bunlardan biri" sayısı.
+WEAK_LIMIT = 5
 
 
 def rank(query: str, results: list, min_score: float = MIN_SCORE,
          key=lambda r: r.name) -> list:
     """Sonuçları sorguya benzerliğe göre sıralar; eşiğin altını atar.
 
-    İki süzgeç var: benzerlik puanı (`score`) ve çok kelimeli sorgularda kapsama
+    Üç süzgeç var: benzerlik puanı (`score`), çok kelimeli sorgularda kapsama
     (`coverage`) — ikincisi olmadan "orumcek adam" araması varyantlar sayesinde
     doğru filmi buluyor ama yanına 'Adam', 'Black Adam' gibi tek kelimesi tutan
-    sonuçları da alıyordu.
+    sonuçları da alıyordu — ve elde net bir kazanan varsa kuyruk kesimi
+    (`LEAD_BAND`): "dark" aramasında 'Dark' 1.00 alırken 'The Dark Money Game'
+    0.65'te kalıyor, o kuyruk 32 satırı doldurmasın.
 
-    Hiçbiri eşiği geçemezse liste boşaltılmaz — sıralanmış hâli döner
+    Hiçbiri eşiği geçemezse liste boşaltılmaz — en iyi `WEAK_LIMIT` tanesi döner
     (kullanıcıya "hiç sonuç yok" demektense zayıf eşleşmeleri göstermek yeğdir;
     yalnızca zaten sonuç varken gürültü ayıklanır).
     """
     scored = sorted(((score(query, key(r)), r) for r in results),
                     key=lambda p: p[0], reverse=True)
-    kept = [r for s, r in scored
+    kept = [(s, r) for s, r in scored
             if s >= min_score and coverage(query, key(r)) >= MIN_COVERAGE]
-    return kept or [r for _, r in scored]
+
+    if kept and kept[0][0] >= STRONG_SCORE:
+        floor = max(min_score, kept[0][0] - LEAD_BAND)
+        # `kept` puana göre azalan sırada; eşiği geçenler her zaman baştaki bir
+        # dilim — kesim de doldurma da indeksle yapılabiliyor.
+        n = sum(1 for s, _ in kept if s >= floor)
+        kept = kept[:max(n, MIN_KEEP)]
+
+    return [r for _, r in kept] or [r for _, r in scored[:WEAK_LIMIT]]
 
 
 def best_score(query: str, results: list, key=lambda r: r.name) -> float:
