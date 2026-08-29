@@ -101,3 +101,4 @@ Supporting: `m3u8_parser.py` (variant/audio-track parsing via the `m3u8` lib —
 - Windows-first: `baslat.bat` forces UTF-8 (`chcp 65001`, `PYTHONUTF8=1`); `cli.py` reconfigures stdout/stderr to UTF-8 for Turkish/emoji output.
 - The CHEQ/dead-source diagnosis (see `DeadSourceError` in Architecture above) and the ad-blacklist/subtitle heuristics both trace back to `reference/örnek eklenti/` (not tracked in git, local-only) — consult it before changing subtitle/ad detection logic. This only applies to Dizipal.
 - Anti-detection posture (both sites): random device/browser persona per run (`personas.py`), jittered retry backoff and inter-episode download pacing (`network.py`/`cli._run_downloads`), no persisted cookies across runs, optional `--tor`. See `yapılcaklar.txt` history / prior session notes for the full reasoning — this is a best-effort, free-only posture, not a guarantee.
+<!-- flaude-dogrulama: regresyon "pytest -q" -->
