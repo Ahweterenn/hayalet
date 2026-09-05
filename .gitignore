@@ -9,3 +9,10 @@ reference/
 yapılcaklar.txt
 .pytest_cache/
 *.egg-info/
+*.apk
+*.html
+flet_app/
+*.tmp
+audio_*.txt
+video_*.txt
+master.txt
