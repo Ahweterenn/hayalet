@@ -17,6 +17,7 @@ from hayalet.core.models import (Episode, Series, episodes_in_season,
                                  match_episode, next_episode, seasons_of)
 from hayalet.core.network import Network
 from hayalet.core.session import SessionState
+from hayalet.core.utils import normalize_poster_url
 
 __all__ = ["Series", "Episode", "search", "suggest", "is_movie", "get_episodes",
           "is_dubbed", "base_title", "find_counterpart", "find_original_counterpart",
@@ -53,15 +54,18 @@ class SearchError(Exception):
 def search(net: Network, session: SessionState, query: str) -> list[Series]:
     cvalue, ckey = _tokens(net, session)
 
-    payload = {"searchterm": query, "cValue": cvalue}
-    if ckey:
-        payload["cKey"] = ckey
-    resp = net.post(
-        session.base_url + config.SEARCH_ENDPOINT,
-        data=payload,
-        referer=session.base_url,
-        headers={"X-Requested-With": "XMLHttpRequest"},
-    )
+    def _post(term: str):
+        payload = {"searchterm": term, "cValue": cvalue}
+        if ckey:
+            payload["cKey"] = ckey
+        return net.post(
+            session.base_url + config.SEARCH_ENDPOINT,
+            data=payload,
+            referer=session.base_url,
+            headers={"X-Requested-With": "XMLHttpRequest"},
+        )
+
+    resp = _post(query)
     try:
         data = resp.json()
     except Exception:
@@ -75,13 +79,34 @@ def search(net: Network, session: SessionState, query: str) -> list[Series]:
         ) from None
 
     results = (data.get("data") or {}).get("result") or []
+    # Bazı kısa/özel kelimelerde ("gibi", "ben" vb.) Dizipal sunucusu stopword hatası ('state: false') veya boş döner.
+    # Bu durumlarda " izle" ya da " dizi" eklenmiş sorgu arka plandaki tam metin aramasını tetikler ve gerçek kaydı getirir.
+    if not results:
+        q_clean = query.strip()
+        for fallback_term in (f"{q_clean} izle", f"{q_clean} dizi"):
+            try:
+                f_resp = _post(fallback_term)
+                f_data = f_resp.json()
+                f_res = (f_data.get("data") or {}).get("result") or []
+                if f_res:
+                    results = f_res
+                    break
+            except Exception:
+                pass
+
     out: list[Series] = []
     for r in results:
         slug = r.get("used_slug") or ""
         name = r.get("object_name") or slug
         typ = r.get("used_type") or "Series"
         if slug:
-            out.append(Series(name=name, slug=slug, type=typ))
+            poster = normalize_poster_url(
+                str(r.get("object_poster_url") or r.get("poster") or r.get("poster_url") or r.get("image")
+                    or r.get("thumbnail") or ""),
+                session.base_url,
+            )
+            out.append(Series(name=name, slug=slug, type=typ,
+                              poster_url=str(poster)))
     return out
 
 
@@ -197,5 +222,3 @@ def find_original_counterpart(net: Network, session: SessionState,
                               dubbed: "Series") -> "Series | None":
     """Dublajlı bir dizinin orijinal/altyazılı muadilini bulur (geriye dönük ad)."""
     return find_counterpart(net, session, dubbed, want_dubbed=False)
-
-

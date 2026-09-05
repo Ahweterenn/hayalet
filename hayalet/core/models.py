@@ -20,6 +20,9 @@ class Series:
     # geliyor — boş dizge "bilmiyoruz" demek, hiçbir akış bunlara bağlı değil.
     year: str = ""
     rating: str = ""
+    poster_url: str = ""
+    backdrop_url: str = ""
+    description: str = ""
 
     def url(self, base_url: str) -> str:
         return f"{base_url}/{self.slug.lstrip('/')}"

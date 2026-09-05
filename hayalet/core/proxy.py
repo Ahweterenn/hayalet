@@ -979,6 +979,20 @@ class HLSProxy:
                                 buf += chunk
                         data = bytes(buf)
                         ctype = r.headers.get("content-type") or "video/mp2t"
+                        # Bazı sağlayıcılar TS segmentlerini .jpg gibi gösterir.
+                        # Media3 gerçek gövdeyi görse bile bu MIME tipiyle segmenti
+                        # resim olarak sınıflandırıp oynatmayı reddedebilir.
+                        if ctype.split(";", 1)[0].strip().lower() in {
+                                "image/jpeg", "image/jpg", "image/png",
+                                "application/octet-stream"}:
+                            ctype = "video/mp2t"
+                        # Bazı sağlayıcılar TS segmentlerini .jpg gibi gösterir.
+                        # Media3 gerçek gövdeyi görse bile bu MIME tipiyle segmenti
+                        # resim olarak sınıflandırıp oynatmayı reddedebilir.
+                        if ctype.split(";", 1)[0].strip().lower() in {
+                                "image/jpeg", "image/jpg", "image/png",
+                                "application/octet-stream"}:
+                            ctype = "video/mp2t"
                         proxy._record_bytes(len(data), t0, time.monotonic())
                         break
                     except _CONN_ERR:

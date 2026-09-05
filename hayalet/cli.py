@@ -34,7 +34,7 @@ from rich.text import Text
 
 from hayalet import config, sites  # noqa: F401 — sites: adapter'ları kaydettirir
 from hayalet.core import (actions, catalog, extractor, logs, m3u8_parser, menu,
-                         personas, prefs, resolver, utils)
+                         personas, prefs, resolver, utils, verifier)
 from hayalet.core.network import Network
 from hayalet.core.session import SessionState
 from hayalet.core.sites import SITES, search_site
@@ -129,7 +129,7 @@ class _ResizeGuard:
         self._stop.set()
 
 
-def _run_downloads(net, session, adapter, series, eps, out_dir):
+def _run_downloads(net, session, adapter, series, eps, out_dir, contexts=None):
     """Bir geçiş: ilk→son sırayla indirir. Dönüş: (ok, failed, skipped) bölüm listeleri."""
     total = len(eps)
     ok, failed, skipped = [], [], []
@@ -174,6 +174,30 @@ def _run_downloads(net, session, adapter, series, eps, out_dir):
                     else f"Tekrar deneniyor: {ep.label}"))
                 try:
                     merged = adapter.build_stream(net, session, ep, series)
+                    
+                    v_ok, v_err = verifier.verify_episode(net, series.name, ep.season, ep.number, merged)
+                    if not v_ok:
+                        progress.stop()
+                        
+                        if contexts and len(contexts) > 1:
+                            progress.console.print(f"[bold red]⚠ UYARI ({ep.label}):[/] {v_err}")
+                            progress.console.print("[cyan]Otomatik olarak diğer sitelerde tam bölüm aranıyor...[/cyan]")
+                            new_m, new_a, new_n, new_s = _try_fallback(contexts, series, ep, adapter.name)
+                            if new_m:
+                                progress.console.print(f"[green]✔ Tam bölüm bulundu:[/] {new_a.name}")
+                                merged = new_m
+                                v_ok = True
+                                
+                        if not v_ok:
+                            if not contexts or len(contexts) <= 1:
+                                progress.console.print(f"[bold red]⚠ UYARI ({ep.label}):[/] {v_err}")
+                            from rich.prompt import Confirm
+                            if not Confirm.ask("Yine de (eksik/kısa) indirmek istiyor musunuz?", default=False):
+                                rc = 1
+                                progress.start()
+                                break
+                        progress.start()
+                        
                     rc = actions.download(session, net, merged, title, out_dir=out_dir,
                                           progress=progress, task_id=cur)
                 except extractor.ExtractError as e:
@@ -192,7 +216,7 @@ def _run_downloads(net, session, adapter, series, eps, out_dir):
     return ok, failed, skipped
 
 
-def _download_queue(net, session, adapter, series, eps, interactive=True):
+def _download_queue(net, session, adapter, series, eps, interactive=True, contexts=None):
     """Kuyruğu indirir; sonunda özet gösterir ve (interaktifse) başarısızları tekrar sorar.
 
     interaktif modda indirmeden önce hedef ANA klasör sorulur (varsayılan: son
@@ -215,7 +239,7 @@ def _download_queue(net, session, adapter, series, eps, interactive=True):
         prefs.save(download_dir=str(base))
 
     out_dir = _out_dir(series, base)
-    ok, failed, skipped = _run_downloads(net, session, adapter, series, eps, out_dir)
+    ok, failed, skipped = _run_downloads(net, session, adapter, series, eps, out_dir, contexts=contexts)
 
     while True:
         parts = [f"[green]✔ {len(ok)} başarılı[/]"]
@@ -233,7 +257,7 @@ def _download_queue(net, session, adapter, series, eps, interactive=True):
         if not menu.prompt_retry_failed(len(failed)):
             break
         retry = failed
-        r_ok, failed, r_skip = _run_downloads(net, session, adapter, series, retry, out_dir)
+        r_ok, failed, r_skip = _run_downloads(net, session, adapter, series, retry, out_dir, contexts=contexts)
         ok += r_ok
 
 
@@ -284,7 +308,7 @@ def _resume_position(series, ep) -> float:
 
 
 # --- İnteraktif akış ------------------------------------------------------
-def _movie_flow(net, session, adapter, series, ep) -> bool:
+def _movie_flow(net, session, adapter, series, ep, contexts=None) -> bool:
     """Film akışı: sezon/bölüm seçimi yok (tek dosya). İzle/İndir'i doğrudan
     filmin üzerinde uygular. Dönüş: True → kullanıcı çıkışı seçti."""
     while True:
@@ -297,14 +321,52 @@ def _movie_flow(net, session, adapter, series, ep) -> bool:
             except extractor.ExtractError as e:
                 console.print(f"[red]Hata:[/] {e}")
         elif act == "download":
-            _download_queue(net, session, adapter, series, [ep])
+            _download_queue(net, session, adapter, series, [ep], contexts=contexts)
         elif act == "search":
             return False                               # yeni aramaya dön
         else:                                          # exit
             return True
 
 
-def _watch_flow(net, session, adapter, series, episodes, start_ep) -> None:
+def _try_fallback(contexts: dict, series, ep, skip_site: str):
+    """Diğer sitelerde aynı dizinin aynı bölümünü arayıp, tam süreli kaynağı bulmaya çalışır."""
+    if not contexts or len(contexts) <= 1: return None, None, None, None
+
+    def check_site(site_name, f_net, f_session):
+        if site_name == skip_site: return None
+        f_adapter = SITES[site_name]
+        try:
+            results = f_adapter.search(f_net, f_session, series.name)
+            if not results: return None
+            f_series = next((s for s in results if s.name.lower() == series.name.lower()), None)
+            if not f_series: return None
+            
+            f_episodes = f_adapter.get_episodes(f_net, f_session, f_series)
+            f_ep = catalog.match_episode(f_episodes, ep.season, ep.number)
+            if not f_ep: return None
+            
+            f_merged = f_adapter.build_stream(f_net, f_session, f_ep, f_series)
+            ok, err = verifier.verify_episode(f_net, series.name, ep.season, ep.number, f_merged)
+            if ok:
+                return f_merged, f_adapter, f_net, f_session
+        except Exception:
+            pass
+        return None
+
+    import concurrent.futures
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=len(contexts))
+    try:
+        futs = [ex.submit(check_site, name, ctx[0], ctx[1]) for name, ctx in contexts.items()]
+        for fut in concurrent.futures.as_completed(futs):
+            res = fut.result()
+            if res:
+                return res
+        return None, None, None, None
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+
+
+def _watch_flow(net, session, adapter, series, episodes, start_ep, contexts=None) -> None:
     """Dizi bölümünü tarayıcıda oynatır; sonraki bölümlere geçiş tarayıcı içinde
     otomatik olur (terminale dönmeden). `advance`, tarayıcı /next'e istek atınca
     (bölüm bitince/⏭ düğmesi) proxy tarafından çağrılır ve sıradaki bölümü çözer.
@@ -366,6 +428,29 @@ def _watch_flow(net, session, adapter, series, episodes, start_ep) -> None:
     except extractor.ExtractError as e:
         console.print(f"[red]Hata:[/] {e}")
         return
+
+    console.print("[dim]Bölüm süresi doğrulanıyor...[/dim]")
+    v_ok, v_err = verifier.verify_episode(net, series.name, start_ep.season, start_ep.number, merged)
+    if not v_ok:
+        if contexts and len(contexts) > 1:
+            console.print(f"[bold red]⚠ UYARI:[/] {v_err}")
+            console.print("[cyan]Otomatik olarak diğer sitelerde tam bölüm aranıyor...[/cyan]")
+            new_m, new_a, new_n, new_s = _try_fallback(contexts, series, start_ep, adapter.name)
+            if new_m:
+                console.print(f"[green]✔ Tam bölüm bulundu:[/] {new_a.name}")
+                merged = new_m
+                adapter = new_a
+                net = new_n
+                session = new_s
+                v_ok = True
+
+        if not v_ok:
+            if not contexts or len(contexts) <= 1:
+                console.print(f"[bold red]⚠ UYARI:[/] {v_err}")
+            from rich.prompt import Confirm
+            if not Confirm.ask("Yine de (eksik/kısa) bölümü izlemek istiyor musunuz?", default=False):
+                return
+
     resume_at = _resume_position(series, start_ep)   # sıfırlanmadan ÖNCE oku
     if resume_at > 0:
         console.print(f"[dim]↻ Kaldığın yerden devam: "
@@ -442,11 +527,11 @@ def run_interactive(contexts: dict):
                     continue                          # "Geri" → mod seçimine dön
                 # Sonraki bölüme geçiş artık tarayıcıda: bölüm bitince (veya ⏭
                 # düğmesi) otomatik geçilir, kullanıcı terminale dönmez.
-                _watch_flow(net, session, adapter, series, episodes, ep)
+                _watch_flow(net, session, adapter, series, episodes, ep, contexts=contexts)
             else:
                 eps = menu.prompt_multi_episodes(season_eps)
                 if eps:
-                    _download_queue(net, session, adapter, series, eps)
+                    _download_queue(net, session, adapter, series, eps, contexts=contexts)
 
             action = menu.prompt_continue(series.name)
             if action == "exit":
@@ -456,9 +541,8 @@ def run_interactive(contexts: dict):
 
 # --- Non-interaktif akış --------------------------------------------------
 def run_cli(net, session, args, adapter):
-    # sites.search_site: gerekirse yazım varyantlarını da dener ve sonucu
-    # benzerliğe göre sıralar (bkz. core/query.py) — interaktif akışla aynı
-    # arama davranışı, --search otomasyonunda da geçerli olsun diye.
+    # Otomasyon akışı da interaktif menüyle aynı toleranslı arama katmanını
+    # kullanır; aksi halde CLI'de çalışan sorgu mobil/menüde farklı sonuç verir.
     results = search_site(adapter, net, session, args.search)
     if not results:
         suggestions = adapter.suggest(net, session, args.search)
@@ -470,6 +554,9 @@ def run_cli(net, session, args, adapter):
         return
     if args.series is None:
         console.print(_results_table(results, "Arama sonuçları"))
+        return
+    if args.series < 0 or args.series >= len(results):
+        console.print(f"[red]Geçersiz sonuç indeksi: {args.series}[/]")
         return
     series = results[args.series]
     episodes = adapter.get_episodes(net, session, series)
@@ -498,6 +585,15 @@ def run_cli(net, session, args, adapter):
     except extractor.ExtractError as e:
         console.print(f"[red]Hata:[/] {e}")
         return
+
+    if args.action in ("watch", "download"):
+        console.print("[dim]Bölüm süresi doğrulanıyor...[/dim]")
+        v_ok, v_err = verifier.verify_episode(net, series.name, ep.season, ep.number, merged)
+        if not v_ok:
+            console.print(f"[bold red]⚠ UYARI:[/] {v_err}")
+            from rich.prompt import Confirm
+            if not Confirm.ask(f"Yine de {args.action} işlemini başlatmak istiyor musunuz?", default=False):
+                return
 
     if args.action == "extract":
         variants = m3u8_parser.list_variants(net, session, merged.video_master_url,
@@ -743,9 +839,8 @@ def _connect_single(adapter, args, tor_proxy):
         except resolver.ResolverError as e:
             console.print(f"  [red]✕[/] {e}")
             return None
-    tor_suffix = " · Tor" if session.proxy else ""
-    console.print(f"  [green]●[/] Bağlantı hazır  "
-                  f"[dim]({adapter.name} · {persona['label']}{tor_suffix})[/]\n")
+    tor_suffix = " [dim](Tor)[/]" if session.proxy else ""
+    console.print(f"  [green]●[/] Bağlantı hazır{tor_suffix}\n")
     return net, session
 
 
@@ -846,29 +941,34 @@ def main():
                 console.print("[yellow]⚠ --domain yalnızca --site ile birlikte anlamlı, "
                               "yoksayıldı.[/]")
             contexts: dict[str, tuple[Network, SessionState]] = {}
-            labels = []
             with console.status("[bright_red]Bağlantı hazırlanıyor (tüm siteler)…",
                                 spinner="dots"):
-                with concurrent.futures.ThreadPoolExecutor(max_workers=len(SITES)) as ex:
+                ex = concurrent.futures.ThreadPoolExecutor(max_workers=len(SITES))
+                try:
                     futs = {ex.submit(_connect, ad, None, not args.no_cache, tor_proxy,
                                       args.cf_cookie, args.user_agent): name
                            for name, ad in SITES.items()}
-                    for fut in concurrent.futures.as_completed(futs):
+                    for fut in concurrent.futures.as_completed(futs, timeout=5.0):
                         name = futs[fut]
                         try:
-                            net, session, persona = fut.result()
+                            net, session, _persona = fut.result()
                         except resolver.ResolverError as e:
                             console.print(f"  [yellow]⚠ {name}: {e}[/]")
                             continue
+                        except Exception as e:
+                            console.print(f"  [yellow]⚠ {name}: Bağlantı hatası ({e})[/]")
+                            continue
                         contexts[name] = (net, session)
                         nets.append(net)
-                        labels.append(f"{name} · {persona['label']}")
+                except concurrent.futures.TimeoutError:
+                    console.print("  [yellow]⚠ Bazı siteler zaman aşımına uğradı (atlanıyor)[/]")
+                finally:
+                    ex.shutdown(wait=False, cancel_futures=True)
             if not contexts:
                 console.print("  [red]✕ Hiçbir siteye bağlanılamadı.[/]")
                 return
-            tor_suffix = " · Tor" if tor_proxy else ""
-            console.print(f"  [green]●[/] Bağlantı hazır  "
-                          f"[dim]({', '.join(labels)}{tor_suffix})[/]\n")
+            tor_suffix = " [dim](Tor)[/]" if tor_proxy else ""
+            console.print(f"  [green]●[/] Bağlantı hazır{tor_suffix}\n")
             run_interactive(contexts)
 
     except KeyboardInterrupt:

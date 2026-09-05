@@ -93,3 +93,48 @@ def safe_filename(name: str) -> str:
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name or "")
     name = re.sub(r"\s+", " ", name).strip()
     return name or "video"
+
+
+# --- Poster yardımcıları --------------------------------------------------
+def normalize_poster_url(url: str, base_url: str = "") -> str:
+    """Poster URL'sini temizler, /artist/ 404 adreslerini eler, protokol ve base_url tamamlar."""
+    if not url:
+        return ""
+    raw = str(url).replace(r"\/", "/").strip().strip("\"'")
+    if not raw or raw.startswith("data:"):
+        return ""
+    if "/artist/" in raw.lower():
+        return ""
+    if raw.startswith("//"):
+        return "https:" + raw
+    if raw.startswith("/"):
+        if base_url:
+            from urllib.parse import urljoin
+            return urljoin(base_url, raw)
+        return raw
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw
+    return ""
+
+
+def poster_url_from_html(fragment: str, base_url: str = "") -> str:
+    """HTML parçasından geçerli poster resim URL'sini çıkarır."""
+    if not fragment:
+        return ""
+    patterns = [
+        r'data-(?:src|lazy-src|original)\s*=\s*["\']([^"\']+)["\']',
+        r'data-background\s*=\s*["\']([^"\']+)["\']',
+        r'background(?:-image)?\s*:\s*url\(["\']?([^"\'\)]+)["\']?\)',
+        r'src\s*=\s*["\']([^"\']+)["\']',
+    ]
+    ignored = (".svg", ".gif", "logo", "avatar", "blank", "placeholder", "icon", "/artist/", "data:image")
+    for pat in patterns:
+        for m in re.finditer(pat, fragment, re.I):
+            val = m.group(1).replace(r"\/", "/").strip()
+            low = val.lower()
+            if any(bad in low for bad in ignored):
+                continue
+            norm = normalize_poster_url(val, base_url)
+            if norm:
+                return norm
+    return ""

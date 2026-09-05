@@ -46,7 +46,8 @@ def list_variants(net: Network, session: SessionState, m3u8_url: str,
         variants.append(Variant(url=uri, height=height,
                                 bandwidth=si.bandwidth or 0 if si else 0))
     variants.sort(key=lambda v: (v.height, v.bandwidth), reverse=True)
-    return variants
+    usable = [v for v in variants if v.height >= 240 or not v.height]
+    return usable or variants[:1]
 
 
 def pick_best(variants: list[Variant]) -> Variant:
@@ -101,13 +102,22 @@ def get_av_urls(net: Network, session: SessionState, master_url: str,
 
     # --- Ayrı ses kanalları (varsa) → hepsi, Türkçe önce ---
     tracks: list[AudioTrack] = []
+    seen_track_keys: set[str] = set()
     auds = [m for m in pl.media if (m.type or "").upper() == "AUDIO" and m.uri]
     for m in auds:
         is_tr = ((m.language or "").lower().startswith("tr")
                  or looks_turkish(m.name or ""))
         url = m.absolute_uri or urljoin(master_url, m.uri)
-        tracks.append(AudioTrack(url=url, lang=(m.language or ""),
-                                 name=(m.name or ""), is_turkish=is_tr))
+        name = (m.name or "").strip()
+        lang = (m.language or "").strip()
+        key = (name.lower(), lang.lower())
+        if url in seen_track_keys or (name and key in seen_track_keys):
+            continue
+        seen_track_keys.add(url)
+        if name:
+            seen_track_keys.add(key)
+        tracks.append(AudioTrack(url=url, lang=lang,
+                                 name=name, is_turkish=is_tr))
     # Türkçe ilk sırada (varsayılan ses o olsun); geri kalanı kaynak sırasında.
     tracks.sort(key=lambda t: not t.is_turkish)
 

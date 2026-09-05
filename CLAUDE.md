@@ -102,3 +102,38 @@ Supporting: `m3u8_parser.py` (variant/audio-track parsing via the `m3u8` lib —
 - The CHEQ/dead-source diagnosis (see `DeadSourceError` in Architecture above) and the ad-blacklist/subtitle heuristics both trace back to `reference/örnek eklenti/` (not tracked in git, local-only) — consult it before changing subtitle/ad detection logic. This only applies to Dizipal.
 - Anti-detection posture (both sites): random device/browser persona per run (`personas.py`), jittered retry backoff and inter-episode download pacing (`network.py`/`cli._run_downloads`), no persisted cookies across runs, optional `--tor`. See `yapılcaklar.txt` history / prior session notes for the full reasoning — this is a best-effort, free-only posture, not a guarantee.
 <!-- flaude-dogrulama: regresyon "pytest -q" -->
+
+## Android build and device workflow
+
+The Native Android project is outside this repository at
+`C:\Users\Public\hayalet-android`. Its Python source is synchronized with this
+repository's `hayalet` package through a junction, so Python changes must be
+included with a fresh APK build.
+
+Use Java 17 and the cached Gradle 8.9 distribution:
+
+```powershell
+$env:JAVA_HOME = "C:\Users\Public\android\jdk\jdk-17.0.20+8"
+Set-Location "C:\Users\Public\hayalet-android"
+& "C:\Users\Public\android\gradle\gradle-8.9\bin\gradle.bat" clean assembleDebug
+```
+
+The APK is
+`C:\Users\Public\hayalet-android\app\build\outputs\apk\debug\app-debug.apk`.
+Use the Android SDK ADB at
+`C:\Users\Public\android\sdk\platform-tools\adb.exe`. The phone's wireless
+debugging port changes; read it from the phone and set `$serial` accordingly,
+then run:
+
+```powershell
+$adb = "C:\Users\Public\android\sdk\platform-tools\adb.exe"
+$serial = "192.168.1.46:<current-port>"
+& $adb connect $serial
+& $adb -s $serial install -r --streaming "C:\Users\Public\hayalet-android\app\build\outputs\apk\debug\app-debug.apk"
+& $adb -s $serial shell am force-stop com.hayalet.test
+& $adb -s $serial shell monkey -p com.hayalet.test 1
+```
+
+Verify installation with
+`adb -s $serial shell dumpsys package com.hayalet.test`. Do not assume an old
+APK is current: always check `lastUpdateTime` after installation.

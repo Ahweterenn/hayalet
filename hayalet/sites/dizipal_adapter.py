@@ -24,6 +24,7 @@ from hayalet.core.models import Episode, Series
 from hayalet.core.network import Network
 from hayalet.core.session import SessionState
 from hayalet.core.sites import register
+from hayalet.core.utils import poster_url_from_html
 
 
 # --- katalog gezinme -------------------------------------------------------
@@ -32,9 +33,32 @@ from hayalet.core.sites import register
 # göstermediğimiz için adsız kart işe yaramaz. Dizi listeleme sayfasındaki
 # kartlarda ise ad `title="... izle"` niteliğinde duruyor.
 _LIST_PATH = "/yabanci-dizi-izle"
-_CARD_RE = re.compile(
-    r'<a[^>]+href="([^"]*?/series/[a-z0-9\-]+)"[^>]*?title="([^"]*?)\s*izle"', re.S)
+_ANY_CARD_RE = re.compile(
+    r'<a\b([^>]*\bhref\s*=\s*["\'][^"\']*/series/[^"\']+["\'][^>]*)>'
+    r'(.*?)</a>', re.S | re.I)
 _HOME_ROW_LIMIT = 20
+
+
+def _poster(fragment: str, base_url: str) -> str:
+    """Dizipal kartlarındaki lazy/background poster öncelikleri."""
+    return poster_url_from_html(fragment, base_url)
+
+
+def _card_name(attrs: str, body: str) -> str:
+    """Kart adını title/aria/alt veya başlık metninden alır."""
+    for source in (attrs, body):
+        match = re.search(
+            r'\b(?:title|aria-label|alt)\s*=\s*["\']([^"\']+)',
+            source, re.I,
+        )
+        if match:
+            name = _html.unescape(match.group(1)).strip()
+            name = re.sub(r"\s+(?:izle|seyret)\s*$", "", name, flags=re.I)
+            if name:
+                return name
+    text = re.sub(r"<[^>]+>", " ", body)
+    text = _html.unescape(re.sub(r"\s+", " ", text)).strip()
+    return re.sub(r"\s+(?:izle|seyret)\s*$", "", text, flags=re.I).strip()
 
 
 def _collapse_dubs(results: list[Series]) -> list[Series]:
@@ -109,13 +133,20 @@ class DizipalAdapter:
         page = net.get(session.base_url + _LIST_PATH, referer=session.base_url).text
         out: list[Series] = []
         seen: set[str] = set()
-        for href, title in _CARD_RE.findall(page):
+        for match in _ANY_CARD_RE.finditer(page):
+            attrs, body = match.group(1), match.group(2)
+            href_m = re.search(r'\bhref\s*=\s*["\']([^"\']+)', attrs, re.I)
+            if not href_m:
+                continue
+            href = href_m.group(1)
+            fragment = match.group(0)
             slug = urlparse(href).path.strip("/")
-            name = _html.unescape(title).strip()
+            name = _card_name(attrs, body)
             if not slug or not name or slug in seen:
                 continue
             seen.add(slug)
-            out.append(Series(name=name, slug=slug, type="Series", site=self.name))
+            out.append(Series(name=name, slug=slug, type="Series", site=self.name,
+                              poster_url=_poster(fragment, session.base_url)))
         return _collapse_dubs(out)
 
     def home_rows(self, net: Network, session: SessionState) -> list[dict]:

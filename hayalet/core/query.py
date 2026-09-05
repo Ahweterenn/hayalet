@@ -284,6 +284,12 @@ def variants(query: str, limit: int = MAX_VARIANTS) -> list[str]:
     if len(base) > _MIN_PREFIX + 1:
         add(base[:max(_MIN_PREFIX, len(base) - 3)])
 
+    # 5) Tek kelimelik kısa aramalarda ("gibi", "ben" vb.) sitelerin arama motoru
+    #    stopword/kısa kelime hatası verebilir veya tam metin indeksinde "izle" ile eşleşir.
+    if len(words) == 1 and len(words[0]) >= 3:
+        add(f"{words[0]} izle")
+        add(f"{words[0]} dizi")
+
     return out[:limit]
 
 

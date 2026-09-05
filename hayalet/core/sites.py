@@ -82,6 +82,72 @@ def register(adapter: SiteAdapter) -> None:
     SITES[adapter.name] = adapter
 
 
+def enrich_series(net: Network, session: SessionState, series: Series) -> None:
+    """Detay sayfasından poster, açıklama, yıl ve puan bilgilerini çeker."""
+    try:
+        url = series.url(session.base_url)
+        resp = net.get(url, session=session)
+        if resp.status_code != 200:
+            return
+        html = resp.text
+        if not html:
+            return
+
+        import html as _html
+        import re
+        from hayalet.core.utils import normalize_poster_url, poster_url_from_html
+
+        needs_poster = (not series.poster_url
+                        or "/backdrop/" in series.poster_url.lower()
+                        or "\\/" in series.poster_url
+                        or "/artist/" in series.poster_url.lower())
+        if needs_poster:
+            m_og = re.search(r'<meta\s+property=["\']og:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
+            if not m_og:
+                m_og = re.search(r'<meta\s+content=["\']([^"\']+)["\']\s+property=["\']og:image["\']', html, re.I)
+            if not m_og:
+                m_og = re.search(r'<meta\s+name=["\']twitter:image["\']\s+content=["\']([^"\']+)["\']', html, re.I)
+
+            p_url = ""
+            if m_og:
+                cand = m_og.group(1).strip()
+                if "/artist/" not in cand.lower():
+                    p_url = normalize_poster_url(cand, session.base_url)
+
+            if not p_url:
+                poster_block_match = re.search(
+                    r'(<div[^>]*class=["\'][^"\']*(?:poster|cover|single-poster|film-info)[^"\']*["\'].*?</div>)',
+                    html, re.S | re.I)
+                if poster_block_match:
+                    p_url = poster_url_from_html(poster_block_match.group(1), session.base_url)
+                if not p_url:
+                    p_url = poster_url_from_html(html[:15000], session.base_url)
+
+            if p_url:
+                series.poster_url = p_url
+
+        if not series.description:
+            m_desc = re.search(r'<meta\s+property=["\']og:description["\']\s+content=["\']([^"\']+)["\']', html, re.I)
+            if not m_desc:
+                m_desc = re.search(r'<meta\s+name=["\']description["\']\s+content=["\']([^"\']+)["\']', html, re.I)
+            if m_desc:
+                series.description = _html.unescape(m_desc.group(1)).strip()
+
+        if not series.rating:
+            m_rate = re.search(r'(?:imdb|puan|rating)[^>]*?>\s*([0-9]+[.,][0-9]+)', html, re.I)
+            if not m_rate:
+                m_rate = re.search(r'class=["\'][^"\']*(?:imdb|rating)[^"\']*["\'][^>]*>\s*([0-9]+[.,][0-9]+)', html, re.I)
+            if m_rate:
+                series.rating = m_rate.group(1).replace(",", ".").strip()
+
+        if not series.year:
+            m_yr = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', html[:4000])
+            if m_yr:
+                series.year = m_yr.group(1).strip()
+    except Exception:
+        pass
+
+
 # --- Çoklu-site paralel arama ----------------------------------------------
 # `contexts`: site adı -> o sitenin (Network, SessionState) çifti. Siteler
 # birbirinden tamamen bağımsız Network/SessionState kullanır (paylaşılan

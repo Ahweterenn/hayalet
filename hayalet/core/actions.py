@@ -213,6 +213,14 @@ def _build_watch_master(proxy, net: Network, session: SessionState, merged):
         subs_local = proxy.virtual(build_subs_playlist(vtt), "m3u8")
         subtitle = (subs_local, "Türkçe", "tr")
 
+    # Harici ses ve altyazı yoksa sentetik master üretmek bazı Media3
+    # sürümlerinde codec/uyarlama özniteliklerini kaybettirip siyah ekran
+    # oluşturabiliyor. Orijinal master'ı proxy'nin güvenli URL rewrite'ı ile
+    # kullanmak bu kaynaklarda daha uyumludur.
+    if not audios and subtitle is None:
+        return proxy.proxied(merged.video_master_url, "m3u8",
+                             referer=merged.video_referer), 0, False
+
     master_text = build_master_playlist(vv, audios, subtitle)
     return proxy.virtual(master_text, "m3u8"), len(merged.audios), bool(subtitle)
 

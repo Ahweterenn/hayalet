@@ -78,11 +78,9 @@ def _audios_from(src, default_name: str, force_tr: bool | None):
                 url=t.url, referer=si.referer,
                 lang=t.lang or ("tr" if is_tr else "und"),
                 name=t.name or default_name, is_turkish=is_tr))
-    else:
-        is_tr = bool(force_tr)
-        out.append(AudioSource(
-            url=video_url, referer=si.referer,
-            lang="tr" if is_tr else "und", name=default_name, is_turkish=is_tr))
+    # Gömülü ses zaten video varyantının parçasıdır. Bunu ayrı bir AUDIO
+    # rendition'ı gibi ilan etmek Media3 ve bazı HLS oynatıcılarında geçersiz
+    # bir master üretir; ayrı kanal yoksa video tek başına oynatılmalıdır.
     return out
 
 
@@ -126,13 +124,19 @@ def build_merged(net: Network, session: SessionState,
     if not audios:
         audios += _audios_from(vsrc, "Ses", force_tr=None)
 
-    # Aynı URL'yi iki kez ekleme
-    seen: set[str] = set()
+    # Aynı URL veya aynı isim/dil kombinasyonunu iki kez ekleme (korsan sitelerde dublaj ve orijinal listesi çift girebiliyor)
+    seen_urls: set[str] = set()
+    seen_names: set[str] = set()
     uniq: list[AudioSource] = []
     for a in audios:
-        if a.url in seen:
+        clean_name = (a.name or "").strip().lower()
+        if a.url in seen_urls:
             continue
-        seen.add(a.url)
+        if clean_name and clean_name in seen_names:
+            continue
+        seen_urls.add(a.url)
+        if clean_name:
+            seen_names.add(clean_name)
         uniq.append(a)
     audios = uniq
 

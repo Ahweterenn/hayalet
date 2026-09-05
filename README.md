@@ -112,3 +112,66 @@ zaten doğrudan çalışır.
 
 > Site bundle'ı yenilenirse `data-rm-k` **passphrase**'i değişebilir; `config.py > RMK_PASSPHRASE`
 > güncellenerek düzeltilir.
+
+## Android uygulaması
+
+Native Android proje ayrı çalışma klasöründedir:
+`C:\Users\Public\hayalet-android`
+
+Gereksinimler:
+- Android SDK: `C:\Users\Public\android\sdk`
+- Java 17: `C:\Users\Public\android\jdk\jdk-17.0.20+8`
+- Gradle 8.9: `C:\Users\Public\android\gradle\gradle-8.9`
+- Telefon ve bilgisayar aynı ağda olmalı; telefonda **Geliştirici seçenekleri > Kablosuz hata ayıklama** açık olmalı.
+
+### APK derleme
+
+PowerShell:
+
+```powershell
+$env:JAVA_HOME = "C:\Users\Public\android\jdk\jdk-17.0.20+8"
+Set-Location "C:\Users\Public\hayalet-android"
+& "C:\Users\Public\android\gradle\gradle-8.9\bin\gradle.bat" clean assembleDebug
+```
+
+APK çıktısı:
+`C:\Users\Public\hayalet-android\app\build\outputs\apk\debug\app-debug.apk`
+
+### Telefona bağlanma ve kurulum
+
+Telefonun kablosuz hata ayıklama ekranında görünen IP ve portu kullan. Port her
+seferinde değişebilir; örnek:
+
+```powershell
+$adb = "C:\Users\Public\android\sdk\platform-tools\adb.exe"
+$serial = "192.168.1.46:46041"
+$apk = "C:\Users\Public\hayalet-android\app\build\outputs\apk\debug\app-debug.apk"
+
+& $adb start-server
+& $adb connect $serial
+& $adb devices
+& $adb -s $serial install -r --streaming $apk
+& $adb -s $serial shell am force-stop com.hayalet.test
+& $adb -s $serial shell monkey -p com.hayalet.test 1
+```
+
+`install` çıktısı **Success** olmalı. Bağlantı reddedilirse telefondaki kablosuz
+hata ayıklamayı kapatıp aç, ekrandaki yeni portu kullan ve `adb connect` komutunu
+tekrarla. Aynı telefonda mDNS satırı görünürse IP:port yerine şu seri de
+kullanılabilir:
+
+```powershell
+& $adb devices
+# örnek: adb-RFCY413HFQY-v8Rxhn._adb-tls-connect._tcp
+```
+
+Kurulumdan sonra doğrulama:
+
+```powershell
+& $adb -s $serial shell dumpsys package com.hayalet.test |
+    Select-String "versionName|lastUpdateTime"
+```
+
+Android Python kodu ana repodaki `hayalet` klasörüyle senkron/junction
+üzerinden paketlenir. Python değişikliğinden sonra APK'nın gerçekten güncel
+olması için `clean assembleDebug` çalıştırılmalıdır.

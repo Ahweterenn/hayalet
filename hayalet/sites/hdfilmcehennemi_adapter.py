@@ -40,6 +40,7 @@ from hayalet.core.models import Episode, Series
 from hayalet.core.network import BlockedError, Network
 from hayalet.core.resolver import ResolverError
 from hayalet.core.session import SessionState
+from hayalet.core.utils import poster_url_from_html
 from hayalet.core.sites import register
 
 _ALPHA = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -173,6 +174,9 @@ _SERIES_TYPES = {"dizi", "series"}
 _POSTER_RE = re.compile(
     r'<a\s+href="([^"]+)"[^>]*?title="([^"]*)"[^>]*?class="poster[^"]*"(.*?)</a>',
     re.S)
+_ANY_POSTER_RE = re.compile(
+    r'<a\b([^>]*\bclass\s*=\s*["\'][^"\']*poster[^"\']*["\'][^>]*)>(.*?)</a>',
+    re.S | re.I)
 # Bazı raflar (ör. "Nette İlk", "Popüler Diziler") büyük kart yerine küçük
 # "mini-poster" kartı kullanıyor: yıl/puan yok, ad <h4> içinde.
 _MINI_RE = re.compile(
@@ -180,6 +184,7 @@ _MINI_RE = re.compile(
 _MINI_TITLE_RE = re.compile(r'class="mini-poster-title"[^>]*>([^<]+)<')
 _YEAR_RE = re.compile(r"<span>\s*(\d{4})\s*</span>")
 _IMDB_RE = re.compile(r'class="imdb"[^>]*>\s*([\d.]+)')
+_IMG_RE = re.compile(r'<img[^>]+(?:data-src|src)="([^"]+)"', re.I)
 _SVG_RE = re.compile(r"<svg.*?</svg>", re.S)
 # Raf başlığı: bölüm başlığı ya da (sekmeli bölümde) etkin sekmenin adı.
 _LABEL_RE = re.compile(
@@ -196,6 +201,11 @@ _NAV_RE = re.compile(r'<a[^>]+href="([^"]+)"[^>]*>\s*(Filmler|Diziler)\s*</a>')
 # slug'lardaki sayı ekleri (-7, -844) zaman içinde değiştiği için elle liste
 # tutmak bakım yükü olurdu. Adı "... Filmleri" ekinden temizleyip gösteriyoruz.
 _GENRE_RE = re.compile(r'<a[^>]+href="([^"]*/tur/[^"]+)"[^>]*>([^<]{2,40}?)\s*Filmleri\s*</a>')
+
+
+def _poster(fragment: str, base_url: str) -> str:
+    """HDFC kartlarında büyük poster/lazy ve background alanlarını seçer."""
+    return poster_url_from_html(fragment, base_url)
 
 
 class HDFCAdapter:
@@ -237,8 +247,9 @@ class HDFCAdapter:
             slug = urlparse(href_m.group(1)).path.strip("/")
             if not slug:
                 continue
+            poster = _poster(frag, session.base_url)
             out.append(Series(name=html.unescape(title_m.group(1)).strip(), slug=slug,
-                              type=typ, site=self.name))
+                              type=typ, site=self.name, poster_url=poster))
         return out
 
     def suggest(self, net: Network, session: SessionState, query: str) -> list[Series]:
@@ -275,13 +286,14 @@ class HDFCAdapter:
             return None
         y = _YEAR_RE.search(body)
         r = _IMDB_RE.search(body)
+        poster = _poster(body, self.known_domain)
         return Series(
             name=name, slug=slug,
             # Dizi sayfalari /dizi/<slug> altinda; tur bundan kesin belli.
             type="Dizi" if slug.startswith("dizi/") else "Film",
             site=self.name,
             year=y.group(1) if y else "",
-            rating=r.group(1) if r else "")
+            rating=r.group(1) if r else "", poster_url=poster)
 
     def _cards(self, html_text: str) -> list[tuple[int, Series]]:
         """Sayfadaki tum kartlar, GORUNME SIRASINA gore (konum, Series).
@@ -294,6 +306,22 @@ class HDFCAdapter:
         for m in _POSTER_RE.finditer(html_text):
             s = self._one(m.group(1), m.group(2), m.group(3))
             if s:
+                found.append((m.start(), s))
+        # Attribute sırası site tarafından değişebiliyor; title/class sırası
+        # değiştiğinde kartı yine de başlık ve görselle birlikte yakala.
+        known = {s.slug for _, s in found}
+        for m in _ANY_POSTER_RE.finditer(html_text):
+            attrs, body = m.group(1), m.group(2)
+            href = re.search(r'\bhref\s*=\s*["\']([^"\']+)', attrs, re.I)
+            title = re.search(r'\btitle\s*=\s*["\']([^"\']*)', attrs, re.I)
+            if not href or not title:
+                continue
+            slug = urlparse(href.group(1)).path.strip("/")
+            if not slug or slug in known:
+                continue
+            s = self._one(href.group(1), html.unescape(title.group(1)), body)
+            if s:
+                known.add(slug)
                 found.append((m.start(), s))
         for m in _MINI_RE.finditer(html_text):
             tm = _MINI_TITLE_RE.search(m.group(2))
@@ -466,15 +494,12 @@ class HDFCAdapter:
 
         _, tracks = get_av_urls(net, session, m3u8_url, embed_url, "best")
         audios = [AudioSource(url=t.url, referer=embed_url, lang=(t.lang or "und"),
-                              name=(t.name or "Ses"), is_turkish=t.is_turkish)
+                             name=(t.name or "Ses"), is_turkish=t.is_turkish)
                  for t in tracks]
-        if not audios:
-            # Ayrı ses rendition'ı yoksa (nadiren) videonun kendisi tek ses kabul edilir.
-            audios = [AudioSource(url=m3u8_url, referer=embed_url, lang="und",
-                                  name="Ses", is_turkish=False)]
         for a in audios:
             a.is_default = False
-        audios[0].is_default = True      # get_av_urls Türkçe'yi zaten başa sıralar
+        if audios:
+            audios[0].is_default = True  # get_av_urls Türkçe'yi zaten başa sıralar
 
         return MergedStream(video_master_url=m3u8_url, video_referer=embed_url,
                             audios=audios, subtitle_url=subtitle_url,
