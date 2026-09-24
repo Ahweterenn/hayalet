@@ -75,6 +75,15 @@ class Endpoint:
     # hiç cevap vermiyor (ölçüldü: 12 sn cevapsız); oturum önce açılınca en
     # azından açık bir cevap ("denied") dönüyor.
     session_first: bool = False
+    # Uzak dinleme adresi (OpenSSH `-R 80:...` yazınca "localhost" gönderir).
+    bind_addr: str = ""
+    # localhost.run oturum kanalındaki isteklere (pty/shell/exec) HİÇ cevap
+    # vermiyor ama adresi yine de kanala yazıyor. OpenSSH `shell`i gönderip
+    # cevabı beklemeden okumaya geçtiği için orada çalışıyor; paramiko ise
+    # cevabı bekleyip takılıyordu (ölçüldü 2026-09-24: none doğrulama ve
+    # yönlendirme kabul, sonra 14 sn cevapsız). False → istek cevap
+    # beklenmeden, pty'siz gönderilir.
+    shell_reply: bool = True
 
 
 # Hepsi AYNI ANDA denenir, sıra yalnızca hata listesinin okunuşunu etkiler.
@@ -88,7 +97,9 @@ ENDPOINTS: tuple[Endpoint, ...] = (
     Endpoint("srv.us", "srv.us", 22, "hayalet", 1,
              auths=("ed25519",), url_re=r"https://[\w.-]+\.srv\.us",
              session_first=True),
-    Endpoint("localhost.run", "localhost.run", 22, "nokey", 80),
+    # 2026-09-24: `none` + cevapsız shell ile yeniden çalışıyor (2,3 sn).
+    Endpoint("localhost.run", "localhost.run", 22, "nokey", 80,
+             bind_addr="localhost", shell_reply=False),
 )
 
 # Tek bir uca ayrılan süreler. Ölü bir uç bütün açılışı geciktirmemeli:
@@ -99,6 +110,8 @@ _FORWARD_TIMEOUT = 12.0
 _URL_TIMEOUT = 40.0
 # Hepsi başarısız olursa kaç tur denenir (arada artan bekleme).
 _PASSES = 3
+# SSH soketinin gönderme/alma tamponu (bkz. _connect_once).
+_SOCK_BUF = 4 * 1024 * 1024
 
 
 def _make_key(paramiko, kind: str):
@@ -298,6 +311,16 @@ class SshTunnel:
         # ve isteklerin sırası ancak burada denetlenebiliyor.
         sock = socket.create_connection((ep.host, ep.port),
                                         timeout=_CONNECT_TIMEOUT)
+        # Video trafiğinin tamamı bu soketten geçiyor. Ölçüldü (2026-09-24,
+        # Windows, srv.us, 5 MB): varsayılan tamponla 234 KB/s, 4 MB ile
+        # 951 KB/s (OpenSSH aynı uçta 870 KB/s). Pencere/paket boyutu ve
+        # şifre türünün belirgin etkisi olmadı. Android'de çekirdek sınırı
+        # buna izin veriyor (tablet: wmem_max 8 MB, tcp_wmem üst 16 MB).
+        for opt in (socket.SO_SNDBUF, socket.SO_RCVBUF):
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, opt, _SOCK_BUF)
+            except OSError:
+                pass
         transport = paramiko.Transport(sock)
         transport.banner_timeout = _CONNECT_TIMEOUT
         transport.auth_timeout = _CONNECT_TIMEOUT
@@ -324,19 +347,21 @@ class SshTunnel:
             url_re = re.compile(ep.url_re)
             chan = None
             if ep.session_first:
-                chan = _call_with_timeout(lambda: self._shell(transport),
-                                          _CONNECT_TIMEOUT)
+                chan = _call_with_timeout(
+                    lambda: self._shell(transport, ep.shell_reply),
+                    _CONNECT_TIMEOUT)
 
             # Gelen her bağlantıyı yerel porta bağla.
             _call_with_timeout(
                 lambda: transport.request_port_forward(
-                    "", ep.bind_port, handler=self._on_channel),
+                    ep.bind_addr, ep.bind_port, handler=self._on_channel),
                 _FORWARD_TIMEOUT)
 
             # Genel adres oturum kanalına yazılıyor; oradan okuyoruz.
             if chan is None:
-                chan = _call_with_timeout(lambda: self._shell(transport),
-                                          _CONNECT_TIMEOUT)
+                chan = _call_with_timeout(
+                    lambda: self._shell(transport, ep.shell_reply),
+                    _CONNECT_TIMEOUT)
             buf = ""
             deadline = time.time() + _URL_TIMEOUT
             while not self._stop.is_set():
@@ -390,7 +415,7 @@ class SshTunnel:
                     self._client = self._transport = None
 
     @staticmethod
-    def _shell(transport):
+    def _shell(transport, reply: bool = True):
         """Adresin yazıldığı oturum kanalını açar (pty şart: bazı uçlar
         adresi yalnız etkileşimli kabukta yazıyor).
 
@@ -401,6 +426,19 @@ class SshTunnel:
         """
         chan = transport.open_session(timeout=_CONNECT_TIMEOUT)
         chan.settimeout(_CONNECT_TIMEOUT)
+        if not reply:
+            # `shell` isteği want_reply=False ile: paramiko'nun invoke_shell'i
+            # cevabı zorunlu bekliyor (bkz. Endpoint.shell_reply).
+            from paramiko.common import cMSG_CHANNEL_REQUEST
+            from paramiko.message import Message
+            m = Message()
+            m.add_byte(cMSG_CHANNEL_REQUEST)
+            m.add_int(chan.remote_chanid)
+            m.add_string("shell")
+            m.add_boolean(False)
+            transport._send_user_message(m)
+            chan.settimeout(1.0)
+            return chan
         chan.get_pty()
         chan.invoke_shell()
         chan.settimeout(1.0)
