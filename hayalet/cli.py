@@ -778,7 +778,7 @@ def _connect(adapter, override_domain, use_cache, tor_proxy,
              cf_cookie: str | None = None, ua_override: str | None = None):
     """Bir adapter için kimlik+Network/SessionState kurar ve domain'i çözer.
     Başarısızsa resolver.ResolverError yükseltir (çağıran yakalar)."""
-    persona = personas.random_persona()
+    persona = personas.random_persona(adapter)
     session = SessionState(base_url=adapter.known_domain, referer=adapter.known_domain,
                            user_agent=persona["user_agent"],
                            impersonate=persona["impersonate"])

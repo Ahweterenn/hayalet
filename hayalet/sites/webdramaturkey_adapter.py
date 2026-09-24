@@ -24,7 +24,9 @@ def _poster(fragment: str, base_url: str) -> str:
 class WebDramaTurkeyAdapter:
     name = "webdramaturkey"
     known_domain = "https://webdramaturkey2.com"
-    
+    # vidmoly yalnız chrome kimliğine akış veriyor (bkz. personas.random_persona).
+    impersonates = ("chrome",)
+
     def resolve_domain(self, net: Network, session: SessionState,
                        override: str | None = None, use_cache: bool = True) -> str:
         domain = (override or self.known_domain).rstrip("/")
@@ -143,7 +145,10 @@ class WebDramaTurkeyAdapter:
                             m3u8_url = stream_url
                             break
                             
-                m_stream = re.search(r'(https?://[^"]+(?:m3u8|mp4)[^"]*)', player_resp.text)
+                # vidmoly adresi tek tırnakla yazıyor (file:'https://...m3u8?...');
+                # yalnız çift tırnakta durmak satırın kalanını (`' }], image:`)
+                # adrese yapıştırıyordu.
+                m_stream = re.search(r'''(https?://[^"'\s<>]+(?:m3u8|mp4)[^"'\s<>]*)''', player_resp.text)
                 if m_stream:
                     m3u8_url = m_stream.group(1)
                     break
@@ -152,6 +157,10 @@ class WebDramaTurkeyAdapter:
                 pass
                 
         if not m3u8_url:
+            # Kaldırılan bölümde oynatıcı hiç yok, yerinde `embed-lock` uyarısı var.
+            if not embed_ids and 'class="embed-lock"' in page:
+                raise ExtractError("webdramaturkey: Bu bölüm sitede telif hakkı "
+                                   "nedeniyle kaldırılmış, oynatılacak video yok.")
             raise ExtractError("webdramaturkey: Uygun m3u8 stream'i bulunamadı.")
             
         return MergedStream(video_master_url=m3u8_url, video_referer=iframe_url,

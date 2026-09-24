@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import random
 import time
+from urllib.parse import urlparse
 
 from curl_cffi import requests
 
@@ -29,6 +30,33 @@ class ChallengeError(BlockedError):
         gereksiz istek. Bu sınıf o durumu ayırır: retry YAPILMAZ, kullanıcıya
         ne yapacağı söylenir (bkz. --cf-cookie).
     """
+
+
+def origin_of(url: str | None) -> str | None:
+    """`https://host/yol?x` → `https://host` (tarayıcının Origin başlığı)."""
+    if not url:
+        return None
+    p = urlparse(url)
+    return f"{p.scheme}://{p.netloc}" if p.scheme and p.netloc else None
+
+
+def media_headers(referer: str | None) -> dict:
+    """Playlist/segment istekleri için tarayıcının gönderdiği Referer + Origin.
+
+    hls.js segmentleri çapraz kökenli XHR ile ister, tarayıcı da o istekte
+    Origin'i KENDİLİĞİNDEN ekler. Bazı CDN düğümleri buna bakıyor. Ölçüldü
+    (2026-09-24, Dizipal `lkm-cahiu1.*.cfd`, aynı adres, aynı ağ): yalnız
+    Referer → 20 sn bekletip SAHTE 522 ("origin'e ulaşılamıyor"), yalnız
+    Origin → 403, ikisi birlikte → 0,4 sn'de 200. 522 gerçek bir çökme gibi
+    göründüğü için bu, "CDN ölü" diye yanlış teşhis edilmişti.
+    """
+    h = {}
+    if referer:
+        h["Referer"] = referer
+        origin = origin_of(referer)
+        if origin:
+            h["Origin"] = origin
+    return h
 
 
 def _is_challenge(resp) -> bool:

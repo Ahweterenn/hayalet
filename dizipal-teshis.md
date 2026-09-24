@@ -259,3 +259,40 @@ Telefon dönünce yapılacak sıra:
    kancasız (curl-cffi) vs kancalı (WebView). Adresler farklıysa ve yalnız
    WebView'inki segment veriyorsa teşhis doğrulanmış, Dizipal çözülmüş olur.
 4. Sonuç ne olursa olsun buraya yaz.
+
+---
+
+## 2026-09-24 — PC, kullanıcının telefon hotspot'u (Turkcell) üzerinden
+
+| Bölüm | Alt playlist | Segment hostu | İlk / orta / son segment |
+|---|---|---|---|
+| Behzat Ç. S01E01 | 69.984 B, 653 parça | `lkm-cahiu1.kuwv2pao78.cfd` | **522**, 522, 522 (her biri ~20 sn) |
+| House of the Dragon S01E01 | 143.205 B, 1.313 parça | `lkm-at73vk.wxq7k7dgq6.cfd` | 206 (0,6–1,0 sn) |
+
+Tablette de aynısı görüldü: Behzat açılmadı, HotD ve Kurtlar Vadisi oynadı.
+PC de aynı ağda, yani fark cihazdan ya da ağdan kaynaklanmıyor. Bölüm uzunluğu da
+sebep değil: playlist'i daha büyük olan HotD oynuyor. Bozuk olan **`lkm-cahiu1`
+CDN düğümü**. 23 Eylül'de telefonda 522 veren düğüm de buydu (`lkm-cahiu1.wxq7k7dgq6.cfd`).
+Bu düğüm hangi bölümlere atanmışsa onlar her yerden oynamıyor; sorun sitenin tarafında.
+
+### DÜZELTME — düğüm ölü DEĞİL, 522 sahte (aynı gün, sonradan ölçüldü)
+
+Behzat tarayıcıda oynuyor ve tarayıcı da **aynı `lkm-cahiu1` düğümünü** kullanıyor (her parça
+ayrı bir rastgele `.cfd` alan adında, hepsi 200). Tarayıcıda 200 dönen **birebir aynı adres**,
+aynı PC'den ve aynı ağdan curl-cffi ile şöyle cevap veriyor:
+
+| Başlıklar | Sonuç |
+|---|---|
+| yalnız `Referer` (bizim eski isteğimiz) | **522**, 20 sn |
+| yalnız `Origin` | 403, 0,3 sn |
+| `Origin` + `Referer` | **200**, 0,4 sn |
+
+Kök neden şu: düğüm `Origin` başlığı olmayan isteğe 20 saniye bekletip gerçek bir çökme gibi görünen
+bir 522 dönüyor. hls.js bu başlığı çapraz kökenli XHR'de kendiliğinden ekliyor, biz eklemiyorduk.
+HotD'nin düğümü bu kontrolü yapmadığı için o oynuyordu. Yukarıdaki "telefonda üretilen adres bozuk"
+ölçümü de büyük ihtimalle bununla açıklanıyor.
+
+Düzeltme `network.media_headers()` ile yapıldı; `proxy._fetch` ve `merge.probe_video` bunu kullanıyor.
+Perde'nin `proxy_api._upstream_headers` fonksiyonu zaten Origin gönderiyordu. Doğrulama (PC):
+Behzat için probe 1,2 sn'de True döndü, proxy üzerinden segment 200 (852.580 B, 1,3 sn).
+HotD de hâlâ 200. 169 test geçiyor.

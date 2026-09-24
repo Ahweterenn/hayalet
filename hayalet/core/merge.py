@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 from hayalet.core import catalog, extractor
 from hayalet.core.catalog import Episode, Series
 from hayalet.core.m3u8_parser import get_av_urls
-from hayalet.core.network import Network
+from hayalet.core.network import Network, media_headers
 from hayalet.core.session import SessionState
 
 
@@ -151,8 +151,14 @@ def probe_video(net: Network, master_url: str, referer: str | None,
     Playlist'ler tam alınır (birkaç yüz KB), segmentin ise yalnız ilk
     64 KB'ı istenir — sınama bir kez, kaynak seçiminde yapılır.
     """
+    # Origin de gönderilmeli: oynatıcının kendisi gönderiyor ve bazı CDN'ler
+    # onsuz sahte 522 dönüyor (bkz. network.media_headers). Sınama oynatıcıdan
+    # farklı istek atarsa sağlam kaynağı ölü sanıp reddeder.
+    baslik = media_headers(referer)
+
     def playlist_al(url):
-        return net.get(url, referer=referer, retries=1, timeout=timeout).text
+        return net.get(url, referer=referer, retries=1, timeout=timeout,
+                       headers=dict(baslik)).text
 
     try:
         body = playlist_al(master_url)
@@ -172,7 +178,7 @@ def probe_video(net: Network, master_url: str, referer: str | None,
         # menzilli deneyip içeriğe bakıyoruz.
         try:
             r = net.get(url, referer=referer, retries=1, timeout=timeout,
-                        headers={"Range": _PROBE_SEGMENT_RANGE})
+                        headers={**baslik, "Range": _PROBE_SEGMENT_RANGE})
         except Exception as e:
             return False, "segment alınamadı (%s)" % type(e).__name__
         onek = (getattr(r, "content", b"") or b"")[:16].lstrip()

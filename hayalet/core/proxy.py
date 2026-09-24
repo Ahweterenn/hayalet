@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 
 from curl_cffi import requests as creq
 
+from hayalet.core.network import media_headers
 from hayalet.core.session import SessionState
 
 # hls.js yerel kopyası (izleme sayfası dış CDN'e bağımlı olmasın). Dosya yoksa
@@ -818,8 +819,10 @@ class HLSProxy:
             def _fetch(self, real, timeout, stream=False, referer=None):
                 return proxy._client.get(
                     real,
+                    # Origin şart: bazı CDN'ler onsuz sahte 522 dönüyor
+                    # (bkz. network.media_headers).
                     headers={"User-Agent": session.user_agent,
-                             "Referer": referer or proxy.referer},
+                             **media_headers(referer or proxy.referer)},
                     cookies=session.cookies,
                     timeout=timeout,
                     stream=stream,

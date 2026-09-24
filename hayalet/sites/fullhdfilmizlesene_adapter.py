@@ -111,7 +111,9 @@ class FullhdfilmizleseneAdapter:
                     if source_type in sx and isinstance(sx[source_type], list):
                         for enc_str in sx[source_type]:
                             dec_url = self._decrypt_rtt(enc_str)
-                            if "rapidvid.net" in dec_url or "vmnow.online" in dec_url or "vidmoly" in dec_url:
+                            # rapidvid alan adı değişiyor (.net → .org görüldü,
+                            # 2026-09-24); yalnız .net'e bakmak kaynağı kaçırıyordu.
+                            if re.search(r"//(?:[\w-]+\.)*(?:rapidvid|vmnow|vidmoly)\.", dec_url):
                                 rapidvid_url = dec_url
                                 break
                     if rapidvid_url: break
@@ -124,8 +126,18 @@ class FullhdfilmizleseneAdapter:
                               retries=1, timeout=10).text
         
         qv_m = re.search(r'(_|av)\(["\']([^"\']+)["\']\)', player_html)
-        if not qv_m:
-            m3u8_m = re.search(r'(https?://[^"]+(?:m3u8|mp4)[^"]*)', player_html)
+        # `/vx/` oynatıcısı (2026-09): adres av('...') içinde değil, aynı
+        # şemayla şifrelenmiş bir JSON ayarında — window._p8. Oynatıcı
+        # `cm`'i (H.264) kullanır; `tm` yalnız tarayıcı AV1 çözebiliyorsa seçilir.
+        p8_m = re.search(r'''window\._p8\s*=\s*['"]([^'"]+)['"]''', player_html)
+        if not qv_m and p8_m:
+            try:
+                cfg = json.loads(self._decrypt_qv(p8_m.group(1)) or "{}")
+            except Exception:
+                cfg = {}
+            m3u8_url = cfg.get("cm") or cfg.get("tm") or ""
+        elif not qv_m:
+            m3u8_m = re.search(r'''(https?://[^"'\s<>]+(?:m3u8|mp4)[^"'\s<>]*)''', player_html)
             if m3u8_m:
                 m3u8_url = m3u8_m.group(1)
             else:

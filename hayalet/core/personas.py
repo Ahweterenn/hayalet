@@ -50,5 +50,15 @@ PERSONAS = [
 ]
 
 
-def random_persona() -> dict:
-    return random.choice(PERSONAS)
+def random_persona(adapter=None) -> dict:
+    """Rastgele kimlik; adapter `impersonates` tanımlıysa yalnız onlardan.
+
+    Bazı sitelerin oynatıcısı kimliğe göre farklı davranıyor. Ölçüldü
+    (2026-09-24, webdramaturkey → vidmoly): yalnız `chrome` akış adresi alıp
+    segment indirebiliyor, öteki beş kimlik ya adres bulamıyor ya da segmentte
+    403 alıyor. Rastgele seçim yüzünden site bir açılışta çalışıp ötekinde
+    çalışmıyordu.
+    """
+    izinli = getattr(adapter, "impersonates", None)
+    havuz = [p for p in PERSONAS if p["impersonate"] in izinli] if izinli else PERSONAS
+    return random.choice(havuz or PERSONAS)
