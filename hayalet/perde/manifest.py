@@ -33,12 +33,21 @@ def inject_master_params(url: str, base_url: str, master_params: list) -> str:
     Bazı CDN'ler yetkilendirme belirtecini master'ın query'sinde veriyor ve
     alt playlist/segment adreslerinde tekrarlamıyor; taşımazsak 403 geliyor.
     Var olan parametrenin üstüne YAZILMAZ.
+
+    Yalnız AYNI hosttaki adreslere taşınır: belirteç o CDN'e ait, başka bir
+    hosta gitmemeli. Ölçüldü (2026-09-24, Dizipal Behzat Ç.): playlist
+    `org.dplayer82.site/l.php?v=<~2 KB>`, segmentler `lkm-cahiu1.*.cfd`'de;
+    `v` segment adresine eklenince segment CDN'i 522 döndürüyor, ham adres
+    200. Odada video 0:00'da kalıyordu, uygulamanın kendi oynatıcısı ise
+    (bu taşımayı yapmadığı için) aynı bölümü oynatıyordu.
     """
     absolute = to_absolute(url, base_url)
     if not absolute or not master_params:
         return absolute or url
     try:
         p = urlparse(absolute)
+        if p.netloc.lower() != urlparse(base_url).netloc.lower():
+            return absolute
         existing = dict(parse_qsl(p.query, keep_blank_values=True))
         for k, v in master_params:
             existing.setdefault(k, v)
