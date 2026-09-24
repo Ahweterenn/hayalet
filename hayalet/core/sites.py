@@ -62,19 +62,28 @@ def browse(contexts: dict[str, tuple[Network, SessionState]], kind: str) -> list
 
 
 def _collect(contexts: dict[str, tuple[Network, SessionState]],
-             method: str, *args) -> list:
+             method: str, *args, timeout: float = 8.0) -> list:
+    """`timeout` saniye sonra, henuz bitmemis site(ler)i beklemeden elde ne
+    varsa onunla doner. Sebep: bir site yavas/erisilemez oldugunda (REQUEST_TIMEOUT=20sn
+    x MAX_RETRIES=3 gibi) `with ThreadPoolExecutor(...)` bloğu TUM sonuclar
+    gelene kadar bekliyordu — 5 siteden 4'u 1 saniyede donse bile tek yavas
+    site butun ana sayfayi dakikaya yakin bekletiyordu. Gec kalan site'in
+    thread'i arka planda kendi halinde biter, sadece ekranı bloklamaktan
+    cikariyoruz."""
     out: list = []
     ready = {n: c for n, c in contexts.items() if hasattr(SITES[n], method)}
     if not ready:
         return out
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ready)) as ex:
-        futs = [ex.submit(getattr(SITES[n], method), net, session, *args)
-                for n, (net, session) in ready.items()]
-        for fut in concurrent.futures.as_completed(futs):
-            try:
-                out.extend(fut.result() or [])
-            except Exception:
-                pass
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=len(ready))
+    futs = [ex.submit(getattr(SITES[n], method), net, session, *args)
+            for n, (net, session) in ready.items()]
+    done, _pending = concurrent.futures.wait(futs, timeout=timeout)
+    for fut in done:
+        try:
+            out.extend(fut.result() or [])
+        except Exception:
+            pass
+    ex.shutdown(wait=False)
     return out
 
 
@@ -82,8 +91,39 @@ def register(adapter: SiteAdapter) -> None:
     SITES[adapter.name] = adapter
 
 
+def _poster_missing(series: Series) -> bool:
+    return (not series.poster_url
+            or "/backdrop/" in series.poster_url.lower()
+            or "\\/" in series.poster_url
+            or "/artist/" in series.poster_url.lower())
+
+
 def enrich_series(net: Network, session: SessionState, series: Series) -> None:
-    """Detay sayfasından poster, açıklama, yıl ve puan bilgilerini çeker."""
+    """Detay sayfasından poster, açıklama, yıl ve puan bilgilerini çeker.
+
+    Poster sırası: og:image / poster bloğu → AYNI sitenin arama listesindeki
+    slug'ı birebir aynı kayıt → sayfanın ilk 15 KB'ı içindeki herhangi bir
+    resim. Son adım en güvensizi (önerilen yapımların/üst şeridin görseli
+    yanlış kapak olabilir), o yüzden sona kaldı; bazı sitelerde (Dizipal)
+    detay sayfası hiç poster vermiyor ama arama listesi veriyor.
+    """
+    _enrich_from_page(net, session, series, page_scan=False)
+    if _poster_missing(series) and series.slug:
+        adapter = SITES.get(series.site)
+        if adapter is not None:
+            try:
+                for m in adapter.search(net, session, series.name):
+                    if m.slug == series.slug and m.poster_url:
+                        series.poster_url = m.poster_url
+                        break
+            except Exception:
+                pass
+    if _poster_missing(series):
+        _enrich_from_page(net, session, series, page_scan=True)
+
+
+def _enrich_from_page(net: Network, session: SessionState, series: Series,
+                      page_scan: bool) -> None:
     try:
         url = series.url(session.base_url)
         resp = net.get(url, session=session)
@@ -120,7 +160,7 @@ def enrich_series(net: Network, session: SessionState, series: Series) -> None:
                     html, re.S | re.I)
                 if poster_block_match:
                     p_url = poster_url_from_html(poster_block_match.group(1), session.base_url)
-                if not p_url:
+                if not p_url and page_scan:
                     p_url = poster_url_from_html(html[:15000], session.base_url)
 
             if p_url:
@@ -173,6 +213,9 @@ def _run_all(method_name: str, contexts: dict[str, tuple[Network, SessionState]]
 # Sonuç sayısı bunun altındaysa liste "zayıf" sayılır ve yazım varyantları da
 # denenir — asıl sorgu bir şeyler bulmuş olsa bile.
 _ENOUGH_RESULTS = 5
+
+# Çoklu-site aramada en fazla bu kadar saniye beklenir (bkz. search_all).
+_SEARCH_DEADLINE = 7.0
 
 
 def search_site(adapter: SiteAdapter, net: Network, session: SessionState,
@@ -270,14 +313,20 @@ def search_all(contexts: dict[str, tuple[Network, SessionState]], query: str) ->
     if not contexts:
         return []
     results: list[Series] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(contexts)) as ex:
-        futs = [ex.submit(search_site, SITES[name], net, session, query)
-                for name, (net, session) in contexts.items()]
-        for fut in concurrent.futures.as_completed(futs):
-            try:
-                results.extend(fut.result())
-            except Exception:
-                pass  # bir site başarısız olursa diğerinin sonucu yine gösterilsin
+    # `with` bloğu TÜM iş parçacıklarını beklerdi: tek yavaş/ölü site (yeniden
+    # deneme + zaman aşımı bütçesiyle onlarca saniye) diğerleri çoktan cevap
+    # vermişken bile aramayı bekletiyordu. Süre sınırından sonra gelenle
+    # devam edilir; geç kalan site o aramada yok sayılır.
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=len(contexts))
+    futs = [ex.submit(search_site, SITES[name], net, session, query)
+            for name, (net, session) in contexts.items()]
+    done, _pending = concurrent.futures.wait(futs, timeout=_SEARCH_DEADLINE)
+    ex.shutdown(wait=False)
+    for fut in done:
+        try:
+            results.extend(fut.result())
+        except Exception:
+            pass  # bir site başarısız olursa diğerinin sonucu yine gösterilsin
     return q.rank(query, _dedupe_cross_site(results))
 
 

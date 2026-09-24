@@ -1,9 +1,11 @@
 # hayalet
 
-**Tarayıcısız (headless)**, saf Python bir terminal aracı — Dizipal (dizi) ve hdfilmcehennemi.nl
-(film), `--site` ile seçilir. Cloudflare/anti-bot korumasını TLS taklidiyle aşar; arar, sezon/bölüm
+**Tarayıcısız (headless)**, saf Python bir terminal aracı — beş site kayıtlı (Dizipal, hdfilmcehennemi.nl,
+diziyou.one, fullhdfilmizlesene.now, webdramaturkey2.com), `--site` ile seçilir ya da hiç
+verilmezse hepsinde birden arar. Cloudflare/anti-bot korumasını TLS taklidiyle aşar; arar, sezon/bölüm
 gezer (ya da filmi doğrudan çözer), m3u8 akışını ve Türkçe altyazıyı çözer; **tarayıcıda** (hls.js)
-izletir veya **ffmpeg** ile toplu indirir.
+izletir veya **ffmpeg** ile toplu indirir. Aynı çekirdek bir de **Android uygulaması** olarak paketli
+(bkz. [Android uygulaması](#android-uygulaması) aşağıda).
 
 ## Yasal uyarı
 
@@ -90,10 +92,12 @@ Site seçimi: `--site dizipal` (varsayılan) veya `--site hdfilmcehennemi`.
    (+ varsa Türkçe altyazıyı softsub) tek geçişte mux'lar → sesli `mp4` / çoklu ses ya da
    altyazılıysa `mkv` (`language=tur`).
 
-> **İkinci site (hdfilmcehennemi):** aynı proxy/ffmpeg altyapısını kullanır ama çıkarım farklıdır —
-> arama `/search?q=` JSON'u, kaynak `/rplayer/` sayfasındaki paketlenmiş (packer) + karıştırılmış
-> JS'ten çözülür (bkz. `hayalet/sites/hdfilmcehennemi_adapter.py`). Yeni bir site eklemek =
-> `hayalet/sites/` altına bir adapter yazmak; ortak katmanlar değişmez.
+> **Diğer siteler** aynı proxy/ffmpeg altyapısını kullanır ama her birinin çıkarım şeması farklıdır —
+> örn. hdfilmcehennemi: arama `/search?q=` JSON'u, kaynak `/rplayer/` sayfasındaki paketlenmiş
+> (packer) + karıştırılmış ("unmix", sitenin kendi şemasını zaman zaman değiştirdiği — bkz.
+> `hayalet/sites/hdfilmcehennemi_adapter.py` başındaki yorumlar) JS'ten çözülür. Yeni bir site
+> eklemek = `hayalet/sites/` altına bir adapter yazmak; ortak katmanlar (proxy, ffmpeg, arama
+> toleransı, arayüz) değişmez.
 
 ## Ölü dublaj kaynakları → otomatik fallback
 
@@ -114,6 +118,14 @@ zaten doğrudan çalışır.
 > güncellenerek düzeltilir.
 
 ## Android uygulaması
+
+Aynı boru hattını (arama, proxy, ffmpeg'siz oynatma, indirme) telefonda kullanan
+native bir uygulama: ana sayfa rafları + "kaldığın yerden devam", çoklu site
+arama, sezon/bölüm gezinme, ExoPlayer tabanlı oynatıcı (dokunulan noktaya göre
+yakınlaştırma, mini pencere/PiP, kulaklık/bluetooth medya tuşu desteği), arka
+planda indirme ve kart üzerinde uzun basmayla hızlı eylemler (kaldır / diziye
+git). Arayüz tamamen kodla çizilir (XML layout yok — bkz. `Ui.java`); Python
+tarafı (`hayalet_app.py`) ince bir JSON köprüsüdür, iş mantığı barındırmaz.
 
 Native Android proje ayrı çalışma klasöründedir:
 `C:\Users\Public\hayalet-android`

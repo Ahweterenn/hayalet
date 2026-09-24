@@ -139,6 +139,183 @@ def _unmix(parts: list[str], unpacked_src: str) -> str:
     return out.decode("utf-8")
 
 
+
+# --- unmix "2. nesil" (2026-09) --------------------------------------------
+# Site paketlenmiş script içine artık İKİ decode fonksiyonu koyuyor: biri
+# TUZAK (eski şemaya kasıtlı benzer — üstteki _OP_RE/_ARRAY_CALL_RE'nin
+# aradığı şekle uyar ama çıktısı hiçbir yerde kullanılmaz), diğeri GERÇEK.
+# Hangisinin gerçek olduğu fonksiyonun YAPISINDAN değil, embed sayfasındaki
+# `sources:[{file:X}]` ifadesinin hangi değişkeni (X) referans aldığından
+# anlaşılıyor — bu sinyal tuzağın şekli değişse de sağlam kalır (canlı iki
+# ayrı film/site yüklemesiyle doğrulandı: aynı yapı, farklı değişken adları).
+#
+# Gerçek fonksiyonun algoritması (iki bağımsız örnekte SAYISAL SABİTLER de
+# birebir aynı çıktı — 7/5/8, 37/241, 3/11/5/251/65519, işaret karakterleri
+# '7'/'3', ROT tabanı 96, LCG 97/41, akış çarpanı 5). Yine de dosyanın genel
+# felsefesiyle tutarlı olsun diye bunları HARDCODE ETMİYORUZ — hepsi kaynak
+# metninden regex ile çıkarılıyor; sabitler bir gün değişirse (yapı aynı
+# kaldığı sürece) kod otomatik uyum sağlar:
+#   1. ARR.length-2'den iki indeks türetilir (mod N1, ve N2+ekli mod ile);
+#      ARR'dan bu iki eleman splice() ile SIRAYLA çıkarılır — biri "OP"
+#      (ters sırada gezilen atob/reverse/ROT işaretleri), diğeri "KEY".
+#   2. Kalan dizi join edilip PAYLOAD olur; KEY üzerinden özel bir hash
+#      (mod-çarpım + XOR) çalıştırılıp 3 türetilmiş sabit üretilir.
+#   3. OP karakterleri TERS sırada PAYLOAD'a uygulanır (atob / reverse / ROT).
+#   4. LCG (lineer eşlenik üreteç) ile bir permütasyon üretilip PAYLOAD
+#      karıştırılır (Fisher-Yates benzeri ama üretici indeks listesiyle).
+#   5. Son adım: akan bir XOR şifre çözme (her baytta çarpım+toplama ile
+#      güncellenen bir sayaçla XOR'lanır).
+_GEN2_REAL_VAR_RE = re.compile(r'sources:\s*\[\{file:(\w+)\}')
+_GEN2_SPLICE_POS_RE = re.compile(
+    r'var (\w+)=(\w+)\.length-2,(\w+)=\1%(\d+),(\w+)=(\d+)\+\(\1%(\d+)\)')
+_GEN2_HASH_RE = re.compile(
+    r'(\w+)=\((\w+)\*(\d+)\+(\w+)\)%(\d+);(\w+)=\((\w+)\+\(\((\w+)<<1\)\^(\w+)\)\)&255')
+_GEN2_DERIVED_RE = re.compile(
+    r'(\w+)=\((\w+)\*(\d+)\+(\w+)\)%256,(\w+)=\((\w+)%(\d+)\)\+(\d+),'
+    r'(\w+)=\(\((\w+)\*(\d+)\+(\w+)\)%(\d+)\)\+1')
+_GEN2_OPS_MARK_RE = re.compile(
+    r"if\((\w+)==='(.)'\)\{(\w+)=atob\(\3\)\}else if\(\1==='(.)'\)\{"
+    r"\3=\3\.split\(''\)\.reverse\(\)\.join\(''\)\}else\{\w+=\(26-\(\(\1\."
+    r"charCodeAt\(0\)-(\d+)\)%26\)\)%26;")
+_GEN2_LCG_RE = re.compile(
+    r'(\w+)=\((\w+)\*(\d+)\+(\d+)\)%(\d+);\w+\[\w+\]=\w+%\(\w+\+1\)')
+_GEN2_STREAM_RE = re.compile(
+    r"(\w+)=(\w+),(\w+)=''.*?for\(.*?\)\{\w+=\w+\.charCodeAt\(\w+\);"
+    r"\1=\(\1\*(\d+)\+(\w+)\)%256;\3\+=String\.fromCharCode\(\w+\^\1\);"
+    r"\1=\(\1\+\w+\)%256\}")
+
+
+def _find_function_body(src: str, name: str) -> str | None:
+    """`function NAME(P){...}` ya da `var NAME=function(P){...}` gövdesini
+    dengeli süslü parantezle (regex balanced-brace yakalayamadığı için elle)
+    ayıklar."""
+    m = re.search(r'(?:var\s+' + re.escape(name) + r'\s*=\s*function'
+                 r'|function\s+' + re.escape(name) + r')\s*\(\w+\)\s*\{', src)
+    if not m:
+        return None
+    depth, start = 0, m.end() - 1
+    for i in range(start, len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start + 1:i]
+    return None
+
+
+def _gen2_decode(arr: list[str], body: str) -> str:
+    pos_m = _GEN2_SPLICE_POS_RE.search(body)
+    hash_m = _GEN2_HASH_RE.search(body)
+    der_m = _GEN2_DERIVED_RE.search(body)
+    ops_m = _GEN2_OPS_MARK_RE.search(body)
+    lcg_m = _GEN2_LCG_RE.search(body)
+    stream_m = _GEN2_STREAM_RE.search(body, pos=0)
+    if not (pos_m and hash_m and der_m and ops_m and lcg_m and stream_m):
+        raise ExtractError("hdfilmcehennemi: 2. nesil unmix parametreleri çözülemedi "
+                          "(site güncellenmiş olabilir).")
+
+    _, _, _, n1, addvar, add_base, n2 = pos_m.groups()
+    n1, add_base, n2 = int(n1), int(add_base), int(n2)
+    h1_mul, h1_mod = int(hash_m.group(3)), int(hash_m.group(5))
+    dg = der_m.groups()
+    d1_mul, d2_mod, d2_add = int(dg[2]), int(dg[6]), int(dg[7])
+    d3_mul, d3_mod = int(dg[10]), int(dg[12])
+    atob_mark, rev_mark, rot_base = ops_m.group(2), ops_m.group(4), int(ops_m.group(5))
+    lcg_mul, lcg_add, lcg_mod = int(lcg_m.group(3)), int(lcg_m.group(4)), int(lcg_m.group(5))
+    stream_mul = int(stream_m.group(4))
+
+    arr = list(arr)
+    nh1 = len(arr) - 2
+    modpos = nh1 % n1
+    addpos = add_base + (nh1 % n2)
+    # splice() SIRAYLA aynı diziyi mutasyona uğratır — JS'teki gibi ADD
+    # pozisyonu ÖNCE, MOD pozisyonu SONRA çıkarılmalı (aksi halde ikinci
+    # indeks yanlış elemanı işaret eder).
+    op = arr.pop(addpos)
+    key = arr.pop(modpos)
+    payload = "".join(arr)
+
+    if len(key) > 4096:
+        payload = base64.b64decode(payload).decode("latin-1")
+
+    h1 = h2 = 0
+    for i, ch in enumerate(key):
+        c = ord(ch)
+        h1 = (h1 * h1_mul + c) % h1_mod
+        h2 = (h2 + ((c << 1) ^ i)) & 255
+
+    d1 = (h1 * d1_mul + h2) % 256
+    d2 = (h2 % d2_mod) + d2_add
+    d3 = ((h2 * d3_mul + h1) % d3_mod) + 1
+
+    for ch in reversed(op):
+        if ch == atob_mark:
+            payload = base64.b64decode(payload).decode("latin-1")
+        elif ch == rev_mark:
+            payload = payload[::-1]
+        else:
+            shift = (26 - ((ord(ch) - rot_base) % 26)) % 26
+            out = []
+            for c in payload:
+                if "A" <= c <= "Z":
+                    out.append(chr((ord(c) - 65 + shift) % 26 + 65))
+                elif "a" <= c <= "z":
+                    out.append(chr((ord(c) - 97 + shift) % 26 + 97))
+                else:
+                    out.append(c)
+            payload = "".join(out)
+    if len(op) > 2048:
+        payload = payload[::-1]
+
+    n = len(payload)
+    idx = [0] * n
+    seed = d3
+    for i in range(n - 1, 0, -1):
+        seed = (seed * lcg_mul + lcg_add) % lcg_mod
+        idx[i] = seed % (i + 1)
+    chars = list(payload)
+    for i in range(1, n):
+        j = idx[i]
+        chars[i], chars[j] = chars[j], chars[i]
+    payload = "".join(chars)
+
+    stream = d1
+    out = []
+    for ch in payload:
+        c = ord(ch)
+        stream = (stream * stream_mul + d2) % 256
+        out.append(chr(c ^ stream))
+        stream = (stream + c) % 256
+    return "".join(out)
+
+
+def _extract_master_url_v2(embed_html: str, unpacked: str) -> str:
+    real_m = _GEN2_REAL_VAR_RE.search(embed_html)
+    if not real_m:
+        raise ExtractError("hdfilmcehennemi: gerçek kaynak değişkeni bulunamadı.")
+    real_var = real_m.group(1)
+
+    call_m = re.search(r"var\s+" + re.escape(real_var) + r"\s*=\s*(\w+)\((.*?)\);", unpacked)
+    if not call_m:
+        raise ExtractError("hdfilmcehennemi: gerçek çözücü çağrısı bulunamadı.")
+    func_name, args_text = call_m.groups()
+
+    m_str = re.match(r'"(.*)"\.split\("(.*)"\)\s*$', args_text)
+    if m_str:
+        big, sep = m_str.groups()
+        arr = big.split(sep)
+    else:
+        arr = re.findall(r'"([^"]*)"', args_text)
+    if not arr:
+        raise ExtractError("hdfilmcehennemi: kaynak dizisi (2. nesil) bulunamadı.")
+
+    body = _find_function_body(unpacked, func_name)
+    if not body:
+        raise ExtractError("hdfilmcehennemi: çözücü fonksiyon gövdesi bulunamadı.")
+    return _gen2_decode(arr, body)
+
+
 def _extract_master_url(embed_html: str) -> str:
     m = _PACKER_RE.search(embed_html)
     if not m:
@@ -146,6 +323,16 @@ def _extract_master_url(embed_html: str) -> str:
     p_raw, a_s, c_s, k_raw = m.groups()
     unpacked = _packer_unpack(_unescape_js_single_quoted(p_raw), int(a_s), int(c_s),
                               k_raw.split("|"))
+
+    # 2026-09: site "2. nesil" şemaya geçti (bkz. yukarıdaki blok) — önce onu
+    # dene. Eski tek-fonksiyonlu şema hâlâ bir mirror/eski önbellekte
+    # karşımıza çıkarsa (embed_html'de sources:[{file:X}] hiç yoksa ya da
+    # 2. nesil ayrıştırma başarısız olursa) eski yola düş.
+    try:
+        return _extract_master_url_v2(embed_html, unpacked)
+    except ExtractError:
+        pass
+
     am = _ARRAY_CALL_RE.search(unpacked)
     if not am:
         raise ExtractError("hdfilmcehennemi: kaynak dizisi (unmix girdisi) bulunamadı.")

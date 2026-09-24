@@ -11,6 +11,9 @@ yapılcaklar.txt
 *.egg-info/
 *.apk
 *.html
+# Perde'nin oynatıcı/davet sayfaları KAYNAK dosya: yukarıdaki *.html kuralı
+# (hata ayıklama dökümleri için konmuş) bunları da sessizce yoksayıyordu.
+!hayalet/perde/public/*.html
 flet_app/
 *.tmp
 audio_*.txt

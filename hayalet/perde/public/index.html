@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Perde — Birlikte Seyret</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+</head>
+
+<body class="home-body">
+
+    <!-- Animated background particles -->
+    <div class="bg-orbs">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+
+    <div class="home-container">
+        <div class="logo-area">
+            <div class="logo-icon">🎭</div>
+            <h1 class="logo-text">Perde</h1>
+            <p class="logo-sub">Birlikte Seyret</p>
+        </div>
+
+        <div class="card home-card">
+            <div class="username-section">
+                <label for="username-input">Kullanıcı Adın</label>
+                <input id="username-input" type="text" placeholder="Adını gir..." maxlength="20" autocomplete="off" />
+            </div>
+
+            <button id="enter-btn" class="btn btn-primary create-room-btn">
+                🎭 Sahneye Gir
+            </button>
+
+            <p class="hint">💡 Arkadaşınla aynı anda film ve dizi seyret!</p>
+        </div>
+    </div>
+
+    <script>
+        function getUsername() {
+            return document.getElementById('username-input').value.trim() || 'Misafir';
+        }
+
+        document.getElementById('enter-btn').addEventListener('click', () => {
+            const username = encodeURIComponent(getUsername());
+            window.location.href = `/room.html?username=${username}`;
+        });
+
+        document.getElementById('username-input').addEventListener('keydown', e => {
+            if (e.key === 'Enter') document.getElementById('enter-btn').click();
+        });
+    </script>
+</body>
+
+</html>

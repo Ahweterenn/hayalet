@@ -29,6 +29,28 @@ class ExtractError(Exception):
     pass
 
 
+# Adım 3'ü (source2.php) GERÇEK bir tarayıcıya devretme kancası.
+#
+# Neden var: bu tek istek, oynatılacak CDN düğümünü seçiyor. Android arm64'te
+# curl-cffi'nin TLS parmak izi PC'dekinden farklı çıkıyor (ölçüldü: ja4
+# ...e5627efa2ab1 vs ...806a8c22fdea) ve telefonda üretilen adres HER YERDEN
+# ölü geliyor (segment 504/522), oysa PC'de üretilen AYNI zincirin adresi
+# telefonun kendi proxy'sinden bile 200 veriyor. Yani ağ ve proxy sağlam,
+# bozuk olan siteden alınan adresin kendisi.
+#
+# Perde'nin çalışan Node sürümü bu adımı hiç taklit etmiyor: `scraper.js`
+# puppeteer ile gerçek Chrome açıp adresi ağ trafiğinden yakalıyor, eklenti de
+# aynısını kullanıcının tarayıcısında yapıyor. Android'de gerçek tarayıcı motoru
+# zaten var (WebView), bu yüzden yalnız bu istek oraya veriliyor.
+#
+# İmza: fetch(page_url, fetch_url) -> gövde metni | None
+#   page_url  : WebView'in gerçekten yükleyeceği sayfa (iframe adresi)
+#   fetch_url : o sayfadan aynı-köken istenecek adres (source2.php)
+# None/boş dönerse sessizce curl-cffi'ye düşülür — masaüstünde kanca hiç
+# kurulmaz, davranış değişmez.
+browser_fetch = None
+
+
 class DeadSourceError(ExtractError):
     """Player host'u ölü/park edilmiş — arkasında video yok (bypass edilemez)."""
 
@@ -82,12 +104,7 @@ def extract_stream(net: Network, session: SessionState, bolum_url: str) -> Strea
 
     # 3) source2.php -> gerçek m3u8 -------------------------------------
     src2 = f"{origin}/source2.php?v={play_list}"
-    resp = net.get(src2, referer=iframe_url,
-                   headers={"X-Requested-With": "XMLHttpRequest"})
-    try:
-        data = resp.json()
-    except Exception:
-        data = json.loads(resp.text)
+    data = _source2_json(net, src2, iframe_url)
 
     if data.get("expired"):
         raise ExtractError("Kaynak süresi doldu (expired) — tekrar deneyin.")
@@ -100,6 +117,31 @@ def extract_stream(net: Network, session: SessionState, bolum_url: str) -> Strea
     m3u8_url = raw_file.replace("m.php", "master.m3u8")
 
     return StreamInfo(m3u8_url, subtitle_url, iframe_url)
+
+
+def _source2_json(net: Network, src2: str, iframe_url: str) -> dict:
+    """source2.php yanıtını çözer; varsa gerçek tarayıcı kancasını kullanır.
+
+    Kanca çalışmazsa (kurulu değil, zaman aşımı, bozuk gövde) curl-cffi ile
+    devam edilir: kötü bir adres almak, hiç adres almamaktan iyidir.
+    """
+    if browser_fetch is not None:
+        try:
+            govde = browser_fetch(iframe_url, src2)
+        except Exception:
+            govde = None
+        if govde:
+            try:
+                return json.loads(govde)
+            except Exception:
+                pass
+
+    resp = net.get(src2, referer=iframe_url,
+                   headers={"X-Requested-With": "XMLHttpRequest"})
+    try:
+        return resp.json()
+    except Exception:
+        return json.loads(resp.text)
 
 
 def _find_turkish_vtt(ihtml: str) -> str | None:

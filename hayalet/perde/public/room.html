@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>Perde — Sahne</title>
+
+    <!-- Open Graph (Link Önizlemesi İçin) -->
+    <meta property="og:title" content="🎭 Perde — Sahne" />
+    <meta property="og:description" content="Hadi beraber bir şeyler izleyelim!" />
+    <meta property="og:type" content="website" />
+    <!-- Eğer ikonunuz varsa buraya ekleyebilirsiniz: <meta property="og:image" content="url_to_image" /> -->
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+    <!-- Uygulamanin paletini uygular; style.css'ten SONRA gelmeli. -->
+    <link rel="stylesheet" href="hayalet.css" />
+    <link rel="stylesheet" href="couple-private.local.css" />
+    <!-- HLS.js for m3u8 streams -->
+    <!-- hls.js YERELDEN: eskiden cdn.jsdelivr.net/npm/hls.js@latest idi.
+     Iki sorun: (1) surum sabit degil, CDN bir gun kirilirsa oda
+     sayfasi hic oynatmaz, (2) CDN'e erisilemeyen agda (ya da
+     ucaktaki/kotalı baglantida) oda tumden calismaz. Dosya ana
+     projede zaten paketli (hayalet/assets/hls.min.js), kopyasi
+     burada duruyor. -->
+    <script src="hls.min.js"></script>
+    <!-- Socket.io -->
+    <script src="/socket.io/socket.io.js"></script>
+
+    <script>
+        (function () {
+            const qs = new URLSearchParams(window.location.search);
+            const qpBase = qs.get('proxyBase');
+
+            if (qpBase && qpBase.trim()) {
+                localStorage.setItem('perdeProxyBase', qpBase.trim());
+                window.PERDE_PROXY_BASE = qpBase.trim();
+                return;
+            }
+
+            window.PERDE_PROXY_BASE = localStorage.getItem('perdeProxyBase') || '';
+        })();
+    </script>
+
+</head>
+
+<body class="room-body">
+
+    <div class="room-body-inner" style="display:flex; flex-direction:column; height:100%;">
+
+        <!-- ══ HEADER (TOP NAV) ══ -->
+        <div class="w2g-nav">
+            <div class="w2g-nav-left">
+                <a href="/" class="back-btn" title="Ana Sayfaya Dön">←</a>
+                <span class="logo-small">🎭 Perde</span>
+            </div>
+            <div class="w2g-nav-right">
+                <div id="tunnel-link-display" class="room-id-badge" style="display:none;"
+                    title="Davet bağlantısını kopyala">
+                    <span class="room-id-label">🎭 Arkadaşını Davet Et</span>
+                    <button id="tunnel-link-copy" class="tunnel-copy-btn" type="button" title="Davet linkini kopyala"
+                        aria-label="Davet linkini kopyala">Davet linkini kopyala</button>
+                </div>
+                <div class="users-online" id="users-online">
+                    <span class="dot"></span>
+                    <span id="online-count">0</span> kişi
+                </div>
+            </div>
+        </div>
+
+        <!-- ══ MAIN CONTENT (SPLIT) ══ -->
+        <div class="w2g-main">
+
+            <!-- LEFT: VIDEO & URL -->
+            <div class="w2g-left">
+                <div class="video-wrapper" id="video-wrapper">
+                    <video id="video-player" crossorigin="anonymous" controls controlsList="nofullscreen"></video>
+                    <!-- Özel altyazı katmanı: native ::cue yerine kullanılır, boyut/renk/arkaplan JS ile canlı güncellenir -->
+                    <div id="subtitle-overlay" class="subtitle-overlay"></div>
+                    <!-- YouTube player mounts here -->
+                    <div id="yt-player-wrap" style="display:none;position:absolute;inset:0;"></div>
+                    <!-- Generic Website IFrame mounts here -->
+                    <iframe id="iframe-player"
+                        style="display:none;position:absolute;inset:0;width:100%;height:100%;border:none;"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
+                        allow="fullscreen; autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+                    <div class="video-overlay" id="video-overlay">
+                        <div class="overlay-content">
+                            <div class="overlay-icon">🎭</div>
+                            <p>Video yüklemek için bir bağlantı gir.</p>
+                        </div>
+                    </div>
+                    <!-- Sync notification -->
+                    <div class="sync-toast" id="sync-toast"></div>
+
+                    <!-- Modern HLS Ayarlar Butonu (Video üzerinde konumlanacak) -->
+                    <button id="player-settings-btn" class="player-settings-btn" style="display:none;"
+                        title="Oynatıcı Ayarları">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="white">
+                            <path
+                                d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.06-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.73,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.06,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.43-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.49-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z">
+                            </path>
+                        </svg>
+                    </button>
+
+                    <!-- Modern Ayarlar Menüsü (Dropdown Overlay) -->
+                    <div id="player-settings-menu" class="player-settings-menu hidden">
+                        <div class="settings-menu-header">
+                            <span>Oynatıcı Ayarları</span>
+                            <button id="close-settings-menu" class="close-menu-btn">&times;</button>
+                        </div>
+                        <div class="settings-menu-body">
+                            <!-- Kalite -->
+                            <div class="setting-item" id="quality-group" style="display:none;">
+                                <span class="setting-label">🎞️ Kalite</span>
+                                <div class="setting-options" id="quality-options"></div>
+                            </div>
+                            <!-- Ses -->
+                            <div class="setting-item" id="audio-group" style="display:none;">
+                                <span class="setting-label">🔊 Ses Dili</span>
+                                <div class="setting-options" id="audio-options"></div>
+                            </div>
+                            <!-- Altyazı -->
+                            <div class="setting-item" id="subtitle-group" style="display:none;">
+                                <span class="setting-label">💬 Altyazı</span>
+                                <div class="setting-options" id="subtitle-options"></div>
+                            </div>
+                            <div class="setting-item">
+                                <button id="open-sub-settings-btn" class="btn btn-secondary btn-sm"
+                                    style="width:100%; justify-content:center; padding: 6px;" title="Altyazı Stili">Altyazı
+                                    Görünümünü Düzenle</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="url-bar">
+                    <input id="video-url-input" type="text" placeholder="Video bağlantısı yapıştır"
+                        autocomplete="off" />
+                    <button id="load-video-btn" class="btn btn-primary btn-sm">Yükle</button>
+                    <button id="fullscreen-wrapper-btn" class="btn btn-secondary btn-sm" title="Tam Ekrana Al">⛶ Tam Ekran</button>
+                </div>
+
+                <div class="external-assist" id="external-assist" style="display:none;">
+                    <span id="external-assist-text">Harici bağlantı</span>
+                    <div class="external-assist-actions">
+                        <button id="open-external-btn" class="btn btn-secondary btn-sm">Yeni Sekmede Aç</button>
+                        <button id="copy-external-btn" class="btn btn-secondary btn-sm">Linki Kopyala</button>
+                    </div>
+                </div>
+
+                <div class="status-bar">
+                    <div class="status-item" id="sync-status">
+                        <span class="status-dot active"></span>
+                        <span>Bağlı</span>
+                    </div>
+                    <div class="status-item" id="secondary-status"></div>
+                </div>
+            </div>
+
+            <!-- RIGHT: CHAT -->
+            <div class="w2g-right">
+                <div class="voice-panel">
+                    <div class="voice-header" id="voice-header">
+                        <span>🎙️ Görüşme</span>
+                        <div style="display:flex;gap:4px;align-items:center;">
+                            <button id="start-audio-btn" class="btn btn-secondary btn-sm">🎤 Sesli</button>
+                            <button id="start-call-btn" class="btn btn-primary btn-sm">📹 Görüntülü</button>
+                        </div>
+                    </div>
+                    <div class="voice-videos" id="voice-videos" style="display:none;">
+                        <video id="remote-video" autoplay playsinline
+                            style="width:100%;border-radius:8px;background:#000;"></video>
+                        <video id="local-video" autoplay playsinline muted
+                            style="width:80px;height:60px;position:absolute;bottom:8px;right:8px;border-radius:6px;border:2px solid var(--accent);object-fit:cover;"></video>
+                        <div id="voice-resize-handle" class="voice-resize-handle" title="Boyutlandırmak için sürükle">⤡</div>
+                    </div>
+                    <div class="voice-controls" id="voice-controls" style="display:none; flex-direction:column; gap:8px;">
+                        <div style="display:flex; gap:6px; flex-wrap:wrap; width:100%;">
+                            <button id="mute-btn" class="btn btn-secondary btn-sm" style="flex:1; padding:4px 2px; font-size:12px;"><span class="btn-icon">🎤</span><span class="btn-label"> Sessiz</span></button>
+                            <button id="cam-btn" class="btn btn-secondary btn-sm" style="flex:1; padding:4px 2px; font-size:12px;"><span class="btn-icon">📷</span><span class="btn-label"> Kapat</span></button>
+                            <button id="vol-toggle-btn" class="btn btn-secondary btn-sm" style="flex:1; padding:4px 2px; font-size:12px;" onclick="document.getElementById('vol-ctrl-box').style.display = document.getElementById('vol-ctrl-box').style.display === 'none' ? 'flex' : 'none'"><span class="btn-icon">🔊</span><span class="btn-label"> Ses Ayarı</span></button>
+                            <button id="end-call-btn" class="btn btn-danger btn-sm" style="flex:1; padding:4px 2px; font-size:12px;"><span class="btn-icon">📵</span><span class="btn-label"> Bitir</span></button>
+                        </div>
+                        <div id="vol-ctrl-box" style="display:none; align-items:center; gap:8px; width:100%; background:var(--bg-card); padding:4px 8px; border-radius:6px; border:1px solid var(--border);">
+                            <span style="font-size:14px;" title="Ses Seviyesi">🔊</span>
+                            <input type="range" id="remote-volume-slider" min="0" max="2" step="0.05" value="1" style="flex:1; cursor:pointer;" title="Ses: 100%">
+                            <span id="remote-volume-label" style="font-size:12px; color:var(--text-muted); min-width:35px; text-align:right;">100%</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-panel" style="border-left:none;">
+                    <div class="chat-header">
+                        <span>💬 Sohbet</span>
+                        <div class="chat-users" id="chat-users-list"></div>
+                    </div>
+                    <div class="chat-messages" id="chat-messages">
+                    </div>
+                    <div class="chat-input-area">
+                        <input id="chat-input" type="text" placeholder="Mesaj yaz..." maxlength="200"
+                            autocomplete="off" />
+                        <button id="send-btn" class="btn btn-primary btn-sm">→</button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ══ SUBTITLE SETTINGS MODAL ══ -->
+    <div id="sub-settings-modal" class="modal"
+        style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:9999; justify-content:center; align-items:center;">
+        <div class="modal-content"
+            style="background:#1e293b; padding:20px; border-radius:10px; border:1px solid #334155; width:300px; max-width:90%;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                <h3 style="margin:0; font-size:16px;">💬 Altyazı Ayarları</h3>
+                <span id="close-sub-settings" style="cursor:pointer; font-size:18px;">&times;</span>
+            </div>
+
+            <div style="margin-bottom:10px;">
+                <label style="display:block; font-size:13px; margin-bottom:5px; color:#94a3b8;">Boyut</label>
+                <select id="sub-size-select"
+                    style="width:100%; padding:8px; background:#0f172a; border:1px solid #334155; color:#fff; border-radius:5px;">
+                    <option value="3vh">Küçük</option>
+                    <option value="4.2vh" selected>Normal</option>
+                    <option value="5.5vh">Büyük</option>
+                    <option value="7vh">Çok Büyük</option>
+                </select>
+            </div>
+
+            <div style="margin-bottom:10px;">
+                <label style="display:block; font-size:13px; margin-bottom:5px; color:#94a3b8;">Yazı Rengi</label>
+                <select id="sub-color-select"
+                    style="width:100%; padding:8px; background:#0f172a; border:1px solid #334155; color:#fff; border-radius:5px;">
+                    <option value="#ffffff" selected>Beyaz</option>
+                    <option value="#fde047">Sarı</option>
+                    <option value="#67e8f9">Mavi</option>
+                    <option value="#4ade80">Yeşil</option>
+                </select>
+            </div>
+
+            <div style="margin-bottom:15px;">
+                <label style="display:block; font-size:13px; margin-bottom:5px; color:#94a3b8;">Arka Plan</label>
+                <select id="sub-bg-select"
+                    style="width:100%; padding:8px; background:#0f172a; border:1px solid #334155; color:#fff; border-radius:5px;">
+                    <option value="rgba(0, 0, 0, 0)">Şeffaf</option>
+                    <option value="rgba(0, 0, 0, 0.5)">Yarı Saydam Siyah</option>
+                    <option value="rgba(0, 0, 0, 0.8)">Koyu Siyah</option>
+                </select>
+            </div>
+
+            <button id="save-sub-settings" class="btn btn-primary" style="width:100%;">Kaydet</button>
+        </div>
+    </div>
+
+    <script src="couple-private.local.js"></script>
+    <script src="room.js"></script>
+
+</body>
+
+</html>
