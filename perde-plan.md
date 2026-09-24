@@ -103,6 +103,14 @@ Go'ya çözümleyici yolunu bildirmek (Go desteklemiyor).
 > ölü.** 37 MB'lık APK şişmesi zaten pahalıydı; artık çalışmadığı da ölçüldü.
 > Öneri B seçeneğine kaydı (aşağıya bakın).
 
+> **GÜNCELLEME (2026-09-24): bu sonuç YANLIŞ çıktı, cloudflared artık ana tünel.**
+> cloudflared yalnız iki yerde DNS'e ihtiyaç duyuyor ve ikisi de dışarıdan
+> karşılanabiliyor: hızlı tünel kaydını (`api.trycloudflare.com`) Python
+> yapıyor, sunucu IP'lerini de Python çözüp `--edge` ile veriyor. Tablette
+> root'suz çalıştı; uygulama içinden oda açılınca trycloudflare linki 3-6 sn'de
+> geliyor. Ölçülen hız 0,97-1,41 MB/s (SSH tüneli aynı gün 0,23-0,29 MB/s). APK
+> +11 MB. Ayrıntı: `hayalet/perde/cloudflared.py`; SSH tüneli yedek olarak kaldı.
+
 ### Ö6. curl-cffi iş parçacığı güvenliği → uyarı yeniden ÜRETİLEMEDİ
 
 CLAUDE.md tek bir curl-cffi istemcisinin iş parçacığı güvenli olmadığını
