@@ -38,7 +38,7 @@ class ExtractError(Exception):
 # telefonun kendi proxy'sinden bile 200 veriyor. Yani ağ ve proxy sağlam,
 # bozuk olan siteden alınan adresin kendisi.
 #
-# Perde'nin çalışan Node sürümü bu adımı hiç taklit etmiyor: `scraper.js`
+# Eski birlikte izleme sayfasının çalışan Node sürümü bu adımı hiç taklit etmiyor: `scraper.js`
 # puppeteer ile gerçek Chrome açıp adresi ağ trafiğinden yakalıyor, eklenti de
 # aynısını kullanıcının tarayıcısında yapıyor. Android'de gerçek tarayıcı motoru
 # zaten var (WebView), bu yüzden yalnız bu istek oraya veriliyor.

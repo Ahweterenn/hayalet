@@ -1,4 +1,4 @@
-"""Telefonda Perde yığınının gerçekten ayağa kalktığını doğrular.
+"""Telefonda oda yığınının gerçekten ayağa kalktığını doğrular.
 
 Masaüstünde çalıştığı ölçüldü; asıl soru Chaquopy/Android tarafı:
   1. Yedi saf-Python paketi APK'ya girdi mi, içe aktarılıyor mu?
@@ -75,7 +75,7 @@ def run(out_path: str | None = None) -> dict:
             sio.emit("pong-test", {"echo": data}, to=sid)
 
         def fallback(environ, start_response):
-            body = b"perde selftest ayakta"
+            body = b"oda selftest ayakta"
             start_response("200 OK", [("Content-Type", "text/plain; charset=utf-8"),
                                       ("Content-Length", str(len(body)))])
             return [body]

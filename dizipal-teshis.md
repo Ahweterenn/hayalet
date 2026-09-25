@@ -2,7 +2,7 @@
 
 Belirti: odaya gönderilen Dizipal bölümü oynamıyor. Playlist'ler geliyor,
 **segmentler gelmiyor**; oynatıcı 0:00'da donuyor ve sohbete "bağlantı sorunu"
-düşüyor. Aynı anda Perde'nin web sürümü (tarayıcı + sniffer eklentisi) aynı
+düşüyor. Aynı anda eski web sürümü (tarayıcı + sniffer eklentisi) aynı
 diziyi oynatabiliyor.
 
 Bu dosya ölçüm günlüğü: her satır ya bir ölçüm ya da elenen bir hipotez.
@@ -95,7 +95,7 @@ adres veriyor.
 2. **Proxy küçük metin yanıtlarını kırpıyor olabilir.** Parmak izi testinde
    JSON yarım geldi (1.228 bayt, "unterminated string"). Segmentlerle ilgisiz
    ama gerçek bir hata.
-3. Perde'nin Node sürümü (`server.js`) depoda yok (`reference/` altında yalnız
+3. Eski web sürümünün Node sunucusu (`server.js`) depoda yok (`reference/` altında yalnız
    sniffer eklentisi var). Karşılaştırma için kullanıcıdan yolu istendi.
 
 ---
@@ -162,12 +162,12 @@ sayfası 7,3 KB) ve gövde `<html` ile başlamıyor. Üç yeni test eklendi
 
 ## 2026-09-23 22:10 — Node sürümü okundu: çözüm mimaride
 
-Kullanıcı Perde'nin çalışan Node sürümünü verdi (`server.js`, `room.js`,
+Kullanıcı eski web sürümünün çalışan Node kodunu verdi (`server.js`, `room.js`,
 `scraper.js`) + yerel eklenti (`reference/örnek eklenti/`) okundu.
 
-### Bulgu: web Perde akışı KENDİSİ üretmiyor
+### Bulgu: eski web sürümü akışı KENDİSİ üretmiyor
 
-| | Web Perde (çalışıyor) | hayalet mobil (çalışmıyor) |
+| | Eski web sürümü (çalışıyor) | hayalet mobil (çalışmıyor) |
 |---|---|---|
 | m3u8 adresini kim üretiyor | **Gerçek Chrome**: `scraper.js` puppeteer ile sayfayı açıp play'e basıyor, `.m3u8`'i ağ trafiğinden dinliyor. Eklenti aynı işi kullanıcının tarayıcısında yapıyor. | curl-cffi (TLS taklidi) |
 | İstek başlıkları | Eklenti gerçek isteğin `cookie/referer/origin/user-agent/authorization`'ını çalıp odaya veriyor (`background.js:580-631`), proxy aynen tekrar oynatıyor | Yalnız `referer` (bizim ürettiğimiz) |
@@ -178,7 +178,7 @@ tarayıcı tarafından üretildiği için CDN onu zaten geçerli sayıyor.
 
 ### Manifest işi bizde birebir aynı — fark orada değil
 
-`hayalet/perde/manifest.py` ile `server.js` satır satır karşılaştırıldı; şunlar
+`hayalet/oda/manifest.py` ile `server.js` satır satır karşılaştırıldı; şunlar
 zaten portlanmış: `inject_master_params` (master query'sini alt adreslere
 taşıma), `rewrite_body` + `URI="..."` niteliği, `ttl_seconds` (master 300 sn /
 VOD 120 sn / canlı 4 sn), bayat kopya yedeği, `ld.php → l.php` 404 tekrarı,
@@ -293,6 +293,6 @@ HotD'nin düğümü bu kontrolü yapmadığı için o oynuyordu. Yukarıdaki "te
 ölçümü de büyük ihtimalle bununla açıklanıyor.
 
 Düzeltme `network.media_headers()` ile yapıldı; `proxy._fetch` ve `merge.probe_video` bunu kullanıyor.
-Perde'nin `proxy_api._upstream_headers` fonksiyonu zaten Origin gönderiyordu. Doğrulama (PC):
+Oda proxy'sinin `proxy_api._upstream_headers` fonksiyonu zaten Origin gönderiyordu. Doğrulama (PC):
 Behzat için probe 1,2 sn'de True döndü, proxy üzerinden segment 200 (852.580 B, 1,3 sn).
 HotD de hâlâ 200. 169 test geçiyor.

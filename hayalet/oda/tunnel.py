@@ -7,7 +7,7 @@ paramiko ise Python; soketleri Bionic'in çözümleyicisini kullanıyor, sorun
 doğmuyor. Üstelik hesap/kurulum/dağıtım gerektirmiyor ve dönen adres
 **HTTPS** — iPhone Safari kamera/mikrofon için bunu şart koşuyor.
 
-Perde'nin Node sürümü bunu `ssh -R 80:localhost:PORT nokey@localhost.run`
+Eski Node sürümü bunu `ssh -R 80:localhost:PORT nokey@localhost.run`
 komutuyla yapıyordu; burada aynı iş kütüphaneyle yapılıyor (Android'de ssh
 komutu yok).
 

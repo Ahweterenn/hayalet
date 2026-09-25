@@ -1,15 +1,16 @@
 """Oda durumu: kullanıcılar, lider, yasaklar, oynatma konumu.
 
 Burası bilerek SAF tutuldu — socket.io, HTTP, ağ yok. Böylece pytest ile
-ağsız denenebiliyor (bkz. tests/test_perde_rooms.py). Ağ tarafı events.py'de.
+ağsız denenebiliyor (bkz. tests/test_oda.py). Ağ tarafı events.py'de.
 
-Perde'nin Node sürümündeki `rooms` sözlüğünün karşılığı; davranış birebir
+Eski Node sürümündeki `rooms` sözlüğünün karşılığı; davranış birebir
 korundu, bir yer hariç: **liderlik**. Orada IP + kullanıcı adı tahminiyle
 bulunuyordu, burada sunucunun ürettiği bir anahtarla. Gerekçe için
 `compute_leader`'a bakın.
 """
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
 def new_room_id(length: int = 6) -> str:
-    """Rastgele oda kimliği. Perde'de sabit 'PERDE' kullanılıyordu; davet
+    """Rastgele oda kimliği. İlk sürümde sabit bir kimlik kullanılıyordu; davet
     linkini bilen herkes girebildiği için tahmin edilebilir olmamalı."""
     return "".join(secrets.choice(_ALPHABET) for _ in range(length))
 
@@ -35,6 +36,22 @@ class User:
     ip: str
     is_host: bool = False       # sunucuyu çalıştıran cihaz (bkz. compute_leader)
     joined_at: float = field(default_factory=time.time)
+    color: str = ""             # profil rengi (#RRGGBB); boşsa istemci addan türetir
+
+
+# Kumanda (oynat/durdur/sar) kimde: herkeste ya da yalnız ev sahibinde.
+CONTROL_MODES = ("all", "host")
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+# Bekleyen öneri sayısı sınırı: bir misafir listeyi şişiremesin.
+_MAX_SUGGESTIONS = 20
+# Sonradan katılan son mesajları görsün (sohbet boş açılıyordu).
+_MAX_CHAT_HISTORY = 50
+
+
+def clean_color(value) -> str:
+    """Yalnız #RRGGBB kabul edilir; başka her şey boş (CSS'e gidiyor)."""
+    v = str(value or "").strip()
+    return v if _COLOR_RE.match(v) else ""
 
 
 @dataclass
@@ -57,19 +74,76 @@ class Room:
     buffering: list[str] = field(default_factory=list)      # sid listesi
     banned_users: list[str] = field(default_factory=list)   # küçük harfli adlar
     banned_ips: list[str] = field(default_factory=list)
-    # Eklentiden/hayalet'ten gelen istek başlıkları (proxy bunları kullanır).
+    # hayalet'ten gelen istek başlıkları (proxy bunları kullanır).
     headers: dict = field(default_factory=dict)
     sub_headers: dict = field(default_factory=dict)
+    control_mode: str = "all"
+    # Şu an oynayan: {"kind", "title", "subtitle", "poster", "ref", "hasNext"}.
+    now: dict = field(default_factory=dict)
+    suggestions: list = field(default_factory=list)
+    chat: list = field(default_factory=list)
 
     # --- kullanıcılar ----------------------------------------------------
     def add_user(self, sid: str, username: str, ip: str,
-                 is_host: bool = False) -> User:
+                 is_host: bool = False, color: str = "") -> User:
         # Yeniden bağlanma: aynı sid'li eski kaydı önce at, yoksa kullanıcı
         # listede iki kez görünüyor.
         self.users = [u for u in self.users if u.sid != sid]
-        u = User(sid=sid, username=username, ip=ip, is_host=is_host)
+        u = User(sid=sid, username=username, ip=ip, is_host=is_host,
+                 color=clean_color(color))
         self.users.append(u)
         return u
+
+    def people(self) -> list[dict]:
+        """Kişi listesi (ekranda gösterilen); IP gibi iç bilgi içermez."""
+        leader = compute_leader(self)
+        return [{"id": u.sid, "name": u.username, "color": u.color,
+                 "host": u.is_host, "leader": leader is not None and u.sid == leader.sid}
+                for u in self.users]
+
+    # --- yetki -------------------------------------------------------------
+    def can_control(self, sid: str) -> bool:
+        """Oynat/durdur/sar yetkisi."""
+        if self.control_mode == "all":
+            return True
+        leader = compute_leader(self)
+        return leader is not None and leader.sid == sid
+
+    def is_leader(self, sid: str) -> bool:
+        leader = compute_leader(self)
+        return leader is not None and leader.sid == sid
+
+    def set_control_mode(self, mode: str) -> bool:
+        if mode not in CONTROL_MODES:
+            return False
+        self.control_mode = mode
+        return True
+
+    def add_chat(self, message: dict) -> None:
+        self.chat.append(message)
+        del self.chat[:-_MAX_CHAT_HISTORY]
+
+    # --- öneriler ----------------------------------------------------------
+    def add_suggestion(self, by: User, item: dict) -> dict | None:
+        """Misafir önerisi. Aynı içerik zaten bekliyorsa yenisi eklenmez."""
+        key = item.get("ref") or item.get("url")
+        if not key:
+            return None
+        for s in self.suggestions:
+            if (s["item"].get("ref") or s["item"].get("url")) == key:
+                return None
+        s = {"id": secrets.token_urlsafe(6), "by": by.username,
+             "byColor": by.color, "item": item, "at": time.time()}
+        self.suggestions.append(s)
+        del self.suggestions[:-_MAX_SUGGESTIONS]
+        return s
+
+    def take_suggestion(self, sid: str) -> dict | None:
+        """Öneriyi listeden çıkarıp döndürür (kabul ya da ret)."""
+        s = next((x for x in self.suggestions if x["id"] == sid), None)
+        if s:
+            self.suggestions = [x for x in self.suggestions if x["id"] != sid]
+        return s
 
     def remove_user(self, sid: str) -> User | None:
         gone = next((u for u in self.users if u.sid == sid), None)
@@ -128,13 +202,17 @@ class Room:
             "isPlaying": self.is_playing,
             "isBuffering": bool(self.buffering),
             "users": self.usernames(),
+            "people": self.people(),
+            "controlMode": self.control_mode,
+            "now": dict(self.now),
+            "chat": list(self.chat),
         }
 
 
 def compute_leader(room: Room) -> User | None:
     """Odanın lideri (yönetim komutlarını ve senkron kalp atışını o gönderir).
 
-    Perde'nin Node sürümü lideri IP + kullanıcı adı eşleşmesiyle tahmin
+    Eski Node sürümü lideri IP + kullanıcı adı eşleşmesiyle tahmin
     ediyordu. Telefon sunucusunda bu BOZULUR: bir röle/tünel arkasında bütün
     izleyiciler aynı IP'den gelir ve rastgele biri lider olabilir. Onun yerine
     sunucu açılışta bir anahtar üretiyor, uygulamanın kendi ekranı o anahtarla
@@ -154,7 +232,7 @@ def normalize_subtitles(raw) -> list[Subtitle]:
     """`set-video` yükünü tek biçime indirger.
 
     İstemci hem ["http://..."] hem [{"url":..., "label":...}] gönderebiliyor;
-    Perde'nin normalize adımı burada birebir korundu.
+    Eski sürümün normalize adımı burada birebir korundu.
     """
     out: list[Subtitle] = []
     if not isinstance(raw, list):
@@ -177,7 +255,7 @@ def subtitles_equal(a: list[Subtitle], b: list[Subtitle]) -> bool:
 
 class RoomStore:
     """Bellekteki oda tablosu. Kalıcı kayıt yok — sunucu kapanınca odalar da
-    gider; Perde'de de böyleydi ve birlikte izleme için sorun değil."""
+    gider; eski sürümde de böyleydi ve birlikte izleme için sorun değil."""
 
     def __init__(self) -> None:
         self._rooms: dict[str, Room] = {}

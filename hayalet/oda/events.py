@@ -1,0 +1,544 @@
+"""socket.io olay işleyicileri.
+
+Olay adları ve yükleri oda sayfasıyla (web/oda.js) birebir eşleşmeli.
+"Gönderen hariç" yayın python-socketio'da `skip_sid=sid`. Bu ayrım kritik:
+`play`/`pause`/`seek` gönderene geri dönerse oynatıcı kendi olayını yeniden
+işleyip sonsuz döngüye giriyor.
+
+Yetki üç katmanlı:
+  * lider (ev sahibi): içerik koyar, önerileri onaylar, kişi çıkarır,
+    kumanda modunu değiştirir;
+  * kumanda: `controlMode` "all" ise herkes, "host" ise yalnız lider
+    oynatır/durdurur/sarar;
+  * misafir: içerik ÖNERİR (katalogdan ya da link), izler, konuşur.
+"""
+from __future__ import annotations
+
+import html
+import threading
+import time
+
+from hayalet.oda import rooms as R
+
+_MAX_CHAT = 1000
+
+
+def _youtube_title(url: str) -> str | None:
+    """YouTube linki ise ekranda gösterilecek kısa ad, değilse None."""
+    low = url.lower()
+    if "youtube.com/" in low or "youtu.be/" in low:
+        return "YouTube"
+    return None
+
+
+def _esc(s) -> str:
+    return html.escape(str(s or ""), quote=True)
+
+
+def _client_ip(environ: dict) -> str:
+    """Röle/tünel arkasında gerçek istemci X-Forwarded-For'un ilk parçasıdır."""
+    xff = environ.get("HTTP_X_FORWARDED_FOR")
+    if xff:
+        return xff.split(",")[0].strip()
+    return environ.get("HTTP_CF_CONNECTING_IP") or environ.get("REMOTE_ADDR", "")
+
+
+def register(sio, store: R.RoomStore, host_token: str,
+             catalog=None, on_identity=None) -> dict:
+    """Tüm olayları verilen socket.io sunucusuna bağlar.
+
+    `catalog` (bkz. catalog.Catalog) verilirse odanın içinden arama/bölüm
+    seçme açılır; `on_identity(resolved)` çözülen akışın kimliğini (UA,
+    çerez) proxy'ye taşır. Dönen sözlük sunucunun kendi tetikleyebildiği
+    işlemleri taşır (uygulamadan "şu bölümü aç").
+    """
+
+    def leader_of(room):
+        return R.compute_leader(room)
+
+    def emit_leader_state(room):
+        leader = leader_of(room)
+        if not leader:
+            return
+        for u in room.users:
+            sio.emit("role-updated",
+                     {"isLeader": u.sid == leader.sid,
+                      "leaderUsername": leader.username}, to=u.sid)
+
+    def emit_people(room):
+        sio.emit("room-users", {"users": room.usernames()}, room=room.id)
+        sio.emit("people", {"people": room.people()}, room=room.id)
+
+    def emit_suggestions(room):
+        """Öneriler yalnız lidere gider; misafirler başkasının önerisini görmez."""
+        leader = leader_of(room)
+        if leader:
+            sio.emit("suggestions", {"items": room.suggestions}, to=leader.sid)
+
+    def sys_msg(room_id, message):
+        sio.emit("system-message", {"message": message}, room=room_id)
+
+    def to_sid(sid, event, payload):
+        sio.emit(event, payload, to=sid)
+
+    def room_of(data):
+        return store.get(str((data or {}).get("roomId", "")))
+
+    def background(fn, *args):
+        """Yavaş iş (arama, akış çözme) olay iş parçacığını kilitlemesin."""
+        start = getattr(sio, "start_background_task", None)
+        if start:
+            start(fn, *args)
+        else:
+            threading.Thread(target=fn, args=args, daemon=True).start()
+
+    def put_video(room, url, subtitles, now, headers=None):
+        """Odaya yeni içerik koyar ve herkese duyurur."""
+        if headers is not None:
+            room.headers = {str(k).lower(): v for k, v in headers.items()}
+        room.video_url = url
+        room.subtitles = R.normalize_subtitles(subtitles or [])
+        room.current_time = 0.0
+        room.is_playing = False
+        room.now = dict(now or {})
+        sio.emit("video-changed",
+                 {"videoUrl": room.video_url,
+                  "subtitles": [s.as_dict() for s in room.subtitles],
+                  "now": room.now}, room=room.id)
+
+    def play_ref(room, ref, sid=None):
+        """Katalog ref'ini çözüp odaya koyar (arka planda çalışır)."""
+        sio.emit("content-loading", {"loading": True}, room=room.id)
+        try:
+            r = catalog.resolve(ref)
+        except Exception as e:  # noqa: BLE001 - sebep kullanıcıya iletilir
+            sio.emit("content-loading", {"loading": False}, room=room.id)
+            # Uygulamadan gelen istekte (sid yok) hata ev sahibinin ekranına.
+            # to=None HERKESE yayın demek; o yüzden açıkça hedef seçiliyor.
+            target = sid or (leader_of(room).sid if leader_of(room) else None)
+            if target:
+                to_sid(target, "catalog-error", {"message": f"Açılamadı: {e}"})
+            return
+        if on_identity:
+            try:
+                on_identity(r)
+            except Exception:
+                pass
+        put_video(room, r.url, r.subtitles, r.now,
+                  headers={"referer": r.referer, "user-agent": r.user_agent})
+        sio.emit("content-loading", {"loading": False}, room=room.id)
+
+    # --- katılma ---------------------------------------------------------
+    @sio.on("join-room")
+    def join_room(sid, data):
+        if not isinstance(data, dict) or not data.get("roomId"):
+            return
+        room_id = str(data["roomId"])
+        raw_name = data.get("username")
+        # Node sürümünde string olmayan bir ad tüm süreci çökertiyordu.
+        username = (raw_name.strip()[:40]
+                    if isinstance(raw_name, str) and raw_name.strip() else "Misafir")
+        environ = sio.get_environ(sid) or {}
+        ip = _client_ip(environ)
+
+        room = store.get_or_create(room_id)
+        if room.is_banned(username, ip):
+            sio.emit("kicked", {"by": "Sistem (eski yasaklı)"}, to=sid)
+            sio.disconnect(sid)
+            return
+
+        # Ev sahibi: sunucunun ürettiği anahtarla bağlanan. Liderlik bununla
+        # belirleniyor; IP tahmini röle arkasında yanlış kişiyi seçiyordu.
+        qs = environ.get("QUERY_STRING", "") or ""
+        # Anahtar iki yoldan gelebilir: el sıkışmanın sorgu dizesi ya da
+        # join yükü. İkincisi şart — yeniden bağlanmalarda sorgu dizesi
+        # korunmayabiliyor ve ev sahibi liderliğini kaybediyordu.
+        yuk_token = (data or {}).get("hostToken")
+        is_host = bool(host_token) and (f"hostToken={host_token}" in qs
+                                        or yuk_token == host_token)
+
+        sio.enter_room(sid, room_id)
+        room.add_user(sid, username, ip, is_host=is_host, color=data.get("color"))
+        sio.save_session(sid, {"room_id": room_id, "username": username})
+
+        state = room.state()
+        state["catalog"] = catalog is not None
+        sio.emit("room-state", state, to=sid)
+        sio.emit("user-joined",
+                 {"username": username, "users": room.usernames()},
+                 room=room_id, skip_sid=sid)
+        emit_people(room)
+        emit_leader_state(room)
+        emit_suggestions(room)
+
+    # --- video kaynağı ---------------------------------------------------
+    @sio.on("set-video")
+    def set_video(sid, data):
+        """Link ile içerik (HLS/MP4/YouTube). Lider koyar, misafir önerir."""
+        if not isinstance(data, dict) or not data.get("roomId"):
+            return
+        room = store.get(str(data["roomId"]))
+        if not room:
+            return
+        video_url = str(data.get("videoUrl") or data.get("url") or "").strip()
+        subs = R.normalize_subtitles(data.get("subtitles"))
+        title = str(data.get("title") or "").strip()[:120]
+
+        if not room.is_leader(sid):
+            u = room.find_user(sid)
+            if u and video_url.startswith(("http://", "https://")):
+                item = {"kind": "link", "url": video_url,
+                        "title": title or _youtube_title(video_url) or video_url[:80]}
+                if room.add_suggestion(u, item):
+                    emit_suggestions(room)
+                    to_sid(sid, "suggestion-sent", {"title": item["title"]})
+            return
+
+        if data.get("headers"):
+            room.headers = {str(k).lower(): v for k, v in data["headers"].items()}
+        if data.get("subHeaders"):
+            room.sub_headers = data["subHeaders"]
+
+        # Aynı video+altyazı yeniden gelirse oynatmayı SIFIRLAMA — yeniden
+        # bağlanma aynı yükü tekrar gönderebiliyor.
+        if (str(room.video_url or "") == str(video_url or "")
+                and R.subtitles_equal(room.subtitles, subs)):
+            return
+
+        yt = _youtube_title(video_url)
+        put_video(room, video_url, data.get("subtitles"),
+                  {"kind": "youtube" if yt else "link",
+                   "title": title or yt or "Bağlantı", "subtitle": "",
+                   "poster": "", "hasNext": False})
+
+    # --- oynatma denetimi -------------------------------------------------
+    def _playback(event, playing):
+        def handler(sid, data):
+            if not isinstance(data, dict):
+                return
+            room = store.get(str(data.get("roomId", "")))
+            if not room:
+                return
+            if not room.can_control(sid):
+                # Kumanda ev sahibinde: istemci kendi hareketini geri alsın.
+                to_sid(sid, "control-denied",
+                       {"currentTime": room.current_time,
+                        "isPlaying": room.is_playing})
+                return
+            t = data.get("currentTime")
+            if isinstance(t, (int, float)):
+                room.current_time = float(t)
+            if playing is not None:
+                room.is_playing = playing
+            sio.emit(event, {"currentTime": room.current_time},
+                     room=room.id, skip_sid=sid)
+        return handler
+
+    sio.on("play")(_playback("play", True))
+    sio.on("pause")(_playback("pause", False))
+    sio.on("seek")(_playback("seek", None))
+
+    @sio.on("sync-heartbeat")
+    def heartbeat(sid, data):
+        if not isinstance(data, dict):
+            return
+        room = store.get(str(data.get("roomId", "")))
+        if not room or not room.users:
+            return
+        leader = leader_of(room)
+        # Yalnız lider odanın saatini yazabilir; herkes yazsaydı en geride
+        # kalan izleyici sürekli diğerlerini geri sarardı.
+        if not leader or leader.sid != sid:
+            return
+        t = data.get("currentTime")
+        if isinstance(t, (int, float)):
+            room.current_time = float(t)
+        room.is_playing = bool(data.get("isPlaying"))
+        sio.emit("sync-heartbeat",
+                 {"currentTime": room.current_time, "isPlaying": room.is_playing},
+                 room=room.id, skip_sid=sid)
+
+    # --- bekleme (buffering) ---------------------------------------------
+    @sio.on("buffering-start")
+    def buffering_start(sid, data):
+        room = store.get(str((data or {}).get("roomId", "")))
+        if not room:
+            return
+        t = (data or {}).get("currentTime")
+        if isinstance(t, (int, float)):
+            room.current_time = float(t)
+        if room.start_buffering(sid):
+            u = room.find_user(sid)
+            sio.emit("room-buffering",
+                     {"isBuffering": True,
+                      "username": u.username if u else "?",
+                      "activeCount": len(room.buffering),
+                      "currentTime": room.current_time}, room=room.id)
+
+    @sio.on("buffering-end")
+    def buffering_end(sid, data):
+        room = store.get(str((data or {}).get("roomId", "")))
+        if not room:
+            return
+        t = (data or {}).get("currentTime")
+        if isinstance(t, (int, float)):
+            room.current_time = float(t)
+        if room.end_buffering(sid):
+            u = room.find_user(sid)
+            sio.emit("room-buffering",
+                     {"isBuffering": False,
+                      "username": u.username if u else "?",
+                      "activeCount": 0,
+                      "currentTime": room.current_time}, room=room.id)
+
+    # --- sohbet ------------------------------------------------------------
+    @sio.on("chat-message")
+    def chat(sid, data):
+        if not isinstance(data, dict) or not data.get("roomId"):
+            return
+        room = store.get(str(data["roomId"]))
+        if not room:
+            return
+        message = str(data.get("message") or "").strip()[:_MAX_CHAT]
+        if not message:
+            return
+        # Ad ve renk sunucudaki kayıttan: istemcinin bildirdiği ada güvenilseydi
+        # herkes başkasının adıyla yazabilirdi.
+        u = room.find_user(sid)
+        payload = {"id": sid,
+                   "username": u.username if u else "Misafir",
+                   "color": u.color if u else "",
+                   "message": message,
+                   "time": time.strftime("%H:%M")}
+        room.add_chat(payload)
+        sio.emit("chat-message", payload, room=room.id)
+
+    # --- oda ayarları --------------------------------------------------------
+    @sio.on("room-settings")
+    def room_settings(sid, data):
+        room = room_of(data)
+        if not room or not room.is_leader(sid):
+            return
+        mode = (data or {}).get("controlMode")
+        if mode is not None and room.set_control_mode(str(mode)):
+            sio.emit("room-settings", {"controlMode": room.control_mode}, room=room.id)
+            sys_msg(room.id, "🎮 Kumanda artık herkeste." if mode == "all"
+                    else "🎮 Kumanda artık yalnız ev sahibinde.")
+            emit_people(room)
+
+    @sio.on("kick-user")
+    def kick_user(sid, data):
+        room = room_of(data)
+        if not room or not room.is_leader(sid):
+            return
+        target = room.find_user(str((data or {}).get("id", "")))
+        if not target or target.sid == sid:
+            return
+        _kick(room, room.find_user(sid), target)
+
+    def _kick(room, leader, target):
+        room.ban(target)
+        sio.emit("kicked", {"by": leader.username}, to=target.sid)
+        room.remove_user(target.sid)
+        sio.emit("user-left",
+                 {"username": target.username, "users": room.usernames()},
+                 room=room.id)
+        sys_msg(room.id,
+                f"👢 <b>{_esc(target.username)}</b> odadan çıkarıldı.")
+        sio.disconnect(target.sid)
+        emit_people(room)
+        emit_leader_state(room)
+
+    # --- katalog (odanın içinden içerik seçme) --------------------------------
+    @sio.on("catalog-search")
+    def catalog_search(sid, data):
+        room = room_of(data)
+        if not room or catalog is None:
+            return
+        q, req = str((data or {}).get("q", "")), (data or {}).get("reqId")
+
+        def work():
+            try:
+                items = catalog.search(q)
+                to_sid(sid, "catalog-results", {"reqId": req, "items": items})
+            except Exception as e:  # noqa: BLE001
+                to_sid(sid, "catalog-error", {"reqId": req, "message": f"Arama başarısız: {e}"})
+        background(work)
+
+    @sio.on("catalog-detail")
+    def catalog_detail(sid, data):
+        room = room_of(data)
+        if not room or catalog is None:
+            return
+        ref, req = (data or {}).get("ref"), (data or {}).get("reqId")
+
+        def work():
+            try:
+                to_sid(sid, "catalog-detail", {"reqId": req, **catalog.detail(ref)})
+            except Exception as e:  # noqa: BLE001
+                to_sid(sid, "catalog-error", {"reqId": req, "message": str(e)})
+        background(work)
+
+    @sio.on("catalog-play")
+    def catalog_play(sid, data):
+        """Lider oynatır; misafirin seçimi öneri olur."""
+        room = room_of(data)
+        if not room or catalog is None:
+            return
+        ref = str((data or {}).get("ref", ""))
+        if room.is_leader(sid):
+            background(play_ref, room, ref, sid)
+            return
+        u = room.find_user(sid)
+        title = str((data or {}).get("title") or "")[:120]
+        subtitle = str((data or {}).get("subtitle") or "")[:80]
+        if u and ref and room.add_suggestion(u, {"kind": "hayalet", "ref": ref,
+                                                 "title": title, "subtitle": subtitle,
+                                                 "poster": str((data or {}).get("poster") or "")}):
+            emit_suggestions(room)
+            to_sid(sid, "suggestion-sent", {"title": title})
+
+    @sio.on("next-episode")
+    def next_ep(sid, data):
+        room = room_of(data)
+        if not room or catalog is None or not room.is_leader(sid):
+            return
+        nxt = catalog.next_of(room.now.get("ref", ""))
+        if nxt:
+            background(play_ref, room, nxt, sid)
+
+    @sio.on("suggestion-accept")
+    def suggestion_accept(sid, data):
+        room = room_of(data)
+        if not room or not room.is_leader(sid):
+            return
+        s = room.take_suggestion(str((data or {}).get("id", "")))
+        emit_suggestions(room)
+        if not s:
+            return
+        item = s["item"]
+        sys_msg(room.id, f"✅ <b>{_esc(s['by'])}</b> önerisi açılıyor: {_esc(item.get('title', ''))}")
+        if item.get("kind") == "hayalet" and catalog is not None:
+            background(play_ref, room, item["ref"], sid)
+        elif item.get("url"):
+            yt = _youtube_title(item["url"])
+            put_video(room, item["url"], [],
+                      {"kind": "youtube" if yt else "link", "title": item.get("title", ""),
+                       "subtitle": "", "poster": "", "hasNext": False})
+
+    @sio.on("suggestion-dismiss")
+    def suggestion_dismiss(sid, data):
+        room = room_of(data)
+        if not room or not room.is_leader(sid):
+            return
+        room.take_suggestion(str((data or {}).get("id", "")))
+        emit_suggestions(room)
+
+    @sio.on("change-nick")
+    def change_nick(sid, data):
+        room = store.get(str((data or {}).get("roomId", "")))
+        if not room:
+            return
+        u = room.find_user(sid)
+        new = str((data or {}).get("newName") or "").strip()[:40]
+        if not u or not new:
+            return
+        color = R.clean_color((data or {}).get("color"))
+        if color:
+            u.color = color
+        old, u.username = u.username, new
+        emit_people(room)
+        sys_msg(room.id,
+                f"✏️ <b>{_esc(old)}</b> ismini <b>{_esc(new)}</b> olarak değiştirdi.")
+        emit_leader_state(room)
+
+    # --- yönetim komutları -------------------------------------------------
+    @sio.on("admin-command")
+    def admin_command(sid, data):
+        if not isinstance(data, dict):
+            return
+        room = store.get(str(data.get("roomId", "")))
+        if not room:
+            return
+        leader = leader_of(room)
+        if not leader or leader.sid != sid:
+            sio.emit("system-message",
+                     {"message": "⛔ Bu komutu yalnızca oda sahibi kullanabilir."},
+                     to=sid)
+            return
+        cmd = str(data.get("command") or "")
+        args = data.get("args") or []
+        who = _esc(leader.username)
+
+        if cmd == "clearvideo":
+            room.video_url = ""
+            room.subtitles = []
+            room.current_time = 0.0
+            room.is_playing = False
+            sio.emit("room-state", room.state(), room=room.id)
+            sys_msg(room.id, f"🎬 Video {who} tarafından kapatıldı.")
+        elif cmd == "clearall":
+            room.chat = []
+            sio.emit("clear-chat", {}, room=room.id)
+            sys_msg(room.id, f"🧹 Sohbet geçmişi {who} tarafından temizlendi.")
+        elif cmd == "announce":
+            sys_msg(room.id, f"📢 DUYURU: {_esc(args[0] if args else '')}")
+        elif cmd == "kick":
+            target = room.find_by_name(args[0] if args else "")
+            if not target:
+                sio.emit("system-message",
+                         {"message": f"❌ Kullanıcı bulunamadı: {_esc(args[0] if args else '')}"},
+                         to=sid)
+                return
+            if target.sid == leader.sid:
+                sio.emit("system-message",
+                         {"message": "❌ Kendini atamazsın."}, to=sid)
+                return
+            _kick(room, leader, target)
+
+    # --- WebRTC sinyalleşmesi ---------------------------------------------
+    # Sunucu yalnız taşıyıcı: ses/görüntü doğrudan taraflar arasında akıyor
+    # (STUN/TURN istemcide tanımlı), bu yüzden telefona yük bindirmiyor.
+    for ev in ("webrtc-offer", "webrtc-answer", "webrtc-ice-candidate",
+               "webrtc-hangup", "webrtc-call-request", "webrtc-call-accept",
+               "webrtc-call-reject"):
+        def relay(sid, data, _ev=ev):
+            room_id = str((data or {}).get("roomId", ""))
+            if store.get(room_id):
+                sio.emit(_ev, data, room=room_id, skip_sid=sid)
+        sio.on(ev)(relay)
+
+    # --- ayrılma -----------------------------------------------------------
+    @sio.event
+    def disconnect(sid, *args):
+        sess = {}
+        try:
+            sess = sio.get_session(sid) or {}
+        except Exception:
+            pass
+        room = store.get(str(sess.get("room_id", "")))
+        if not room:
+            return
+        gone = room.remove_user(sid)
+        if not gone:
+            return
+        sio.emit("user-left",
+                 {"username": gone.username, "users": room.usernames()},
+                 room=room.id)
+        emit_people(room)
+        # Ayrılan kişi beklemedeyse oda sonsuza kadar "bekliyor" kalmasın.
+        if not room.buffering:
+            sio.emit("room-buffering",
+                     {"isBuffering": False, "username": gone.username,
+                      "activeCount": 0, "currentTime": room.current_time},
+                     room=room.id)
+        emit_leader_state(room)
+        emit_suggestions(room)
+
+    def app_play(room_id, ref):
+        """Uygulamanın kendi gönderdiği bölüm (katalog ref'i)."""
+        room = store.get(room_id)
+        if room is not None and catalog is not None:
+            background(play_ref, room, ref, None)
+
+    return {"play": app_play}

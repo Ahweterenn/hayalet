@@ -1,0 +1,431 @@
+/* hayalet · birlikte izle
+   Palet uygulamanın Ui.java'sından: lacivert zemin, çay turuncusu vurgu.
+   Uygulama içinden açılınca ?theme=&accent= ile kullanıcının seçtiği tema ve
+   vurgu gelir; tarayıcıda sistem temasını izler.
+
+   Düzenler (hepsi yalnız CSS; tam ekrana geçerken DOM'da eleman taşınmaz —
+   eski sayfada taşımak videoları duraklatıyordu):
+     dar/dikey  : video üstte, paneller altta
+     geniş      : video solda, panel sağda
+     sinema     : telefon yatay ya da tam ekran; video her yeri kaplar,
+                  panel sağdan kayan çekmece, son mesajlar video üstünde */
+
+:root {
+  --bg: #121620; --surface: #1B2130; --surface-2: #242C3E; --surface-3: #2D3750;
+  --text: #F2F4F7; --soft: #B0B7C3; --muted: #8B93A5; --stroke: #3A4358;
+  --accent: #EA5814; --accent-ink: #fff; --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --danger: #E5484D; --ok: #27AE60; --warn: #E0A526;
+  --r: 14px; --r-sm: 10px; --shadow: 0 10px 30px rgba(0,0,0,.35);
+  --top: 56px; --side-w: clamp(320px, 28vw, 400px);
+  --safe-b: env(safe-area-inset-bottom, 0px); --safe-r: env(safe-area-inset-right, 0px);
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Arial, sans-serif;
+  color-scheme: dark;
+}
+[data-theme="light"] {
+  --bg: #F3F5F9; --surface: #FFFFFF; --surface-2: #E6EAF2; --surface-3: #D9DFEA;
+  --text: #171B24; --soft: #454C5C; --muted: #5F6778; --stroke: #C5CBD9;
+  --shadow: 0 10px 30px rgba(20,30,60,.14);
+  color-scheme: light;
+}
+@supports not (color: color-mix(in srgb, red, blue)) { :root { --accent-soft: rgba(234,88,20,.16); } }
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 var(--font); -webkit-font-smoothing: antialiased; overflow: hidden; -webkit-tap-highlight-color: transparent; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+[hidden] { display: none !important; }
+.muted { color: var(--muted); }
+.tiny { font-size: 12px; }
+.row { display: flex; align-items: center; }
+.gap { gap: 10px; }
+.icon { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+/* --- düğmeler ve alanlar ------------------------------------------------ */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 14px; border: 1px solid transparent; border-radius: 999px; background: var(--surface-2); color: var(--text); font-weight: 600; white-space: nowrap; transition: background .15s, transform .1s, border-color .15s; }
+.btn:hover { background: var(--surface-3); }
+.btn:active { transform: scale(.97); }
+.btn:focus-visible, .field:focus-visible, .tab:focus-visible, .c-btn:focus-visible, .chip:focus-visible, .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.ghost { background: transparent; }
+.btn.ghost:hover { background: var(--surface-2); }
+.btn.danger { background: var(--danger); color: #fff; }
+.btn.ok { background: var(--ok); color: #fff; }
+.btn.icon { width: 40px; padding: 0; }
+.btn.round { width: 60px; height: 60px; border-radius: 50%; }
+.btn.round .icon { width: 26px; height: 26px; }
+.btn.sm { min-height: 32px; padding: 0 12px; font-size: 13px; }
+.btn.sm .icon { width: 16px; height: 16px; }
+.btn.big { min-height: 50px; font-size: 16px; }
+.btn.block { width: 100%; }
+.btn:disabled { opacity: .5; pointer-events: none; }
+.field { width: 100%; min-height: 42px; padding: 0 14px; border: 1px solid var(--stroke); border-radius: 12px; background: var(--surface); color: var(--text); outline: none; transition: border-color .15s; }
+.field:focus { border-color: var(--accent); }
+.field.big { min-height: 50px; font-size: 16px; }
+.field-wrap { position: relative; }
+.field-wrap .field { padding-left: 42px; }
+.field-icon { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.label { display: block; margin: 16px 0 8px; font-size: 13px; font-weight: 600; color: var(--soft); }
+.chips { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 6px; scrollbar-width: none; }
+.chip { flex: none; padding: 7px 14px; border-radius: 999px; border: 1px solid var(--stroke); background: transparent; font-size: 13px; font-weight: 600; }
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.segmented { display: flex; padding: 3px; gap: 3px; border-radius: 12px; background: var(--surface-2); }
+.segmented button { flex: 1; min-height: 36px; border: 0; border-radius: 9px; background: transparent; font-weight: 600; font-size: 13px; }
+.segmented button.on { background: var(--surface); box-shadow: 0 1px 4px rgba(0,0,0,.2); color: var(--accent); }
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; }
+.swatch { width: 34px; height: 34px; border-radius: 50%; border: 3px solid transparent; outline: 2px solid transparent; }
+.swatch.on { border-color: var(--bg); outline-color: var(--text); }
+.avatar { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; color: #fff; font-weight: 700; font-size: 13px; flex: none; text-shadow: 0 1px 2px rgba(0,0,0,.25); }
+.avatar.xs { width: 24px; height: 24px; font-size: 10px; }
+.avatar.xl { width: 72px; height: 72px; font-size: 26px; }
+.spinner { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- isim ekranı ------------------------------------------------------------ */
+.join, .kicked { position: fixed; inset: 0; display: grid; place-items: center; padding: 20px; background:
+  radial-gradient(1200px 600px at 50% -10%, var(--accent-soft), transparent 60%), var(--bg); overflow-y: auto; z-index: 50; }
+.join-card { width: min(420px, 100%); padding: 28px 24px 22px; border-radius: 22px; background: var(--surface); box-shadow: var(--shadow); text-align: left; }
+.join-card h2 { margin: 12px 0 4px; }
+.join-mark { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 18px; background: var(--accent); color: #fff; }
+.join-mark .icon { width: 32px; height: 32px; }
+svg.join-mark { padding: 12px; }
+.join-title { margin: 16px 0 4px; font-size: 24px; }
+.join-sub { margin: 0 0 6px; }
+.join-card .btn.block { margin-top: 22px; }
+.join-card .tiny { text-align: center; margin: 12px 0 0; }
+.join-card .app-open { margin-top: 18px; background: var(--accent); color: var(--accent-ink); text-decoration: none; }
+.join-card .app-open .icon { width: 20px; height: 20px; }
+.join-card .join-or { margin: 14px 0 4px; }
+
+/* --- iskelet ------------------------------------------------------------------- */
+.app { height: 100dvh; display: grid; grid-template-rows: var(--top) minmax(0, 1fr); }
+.topbar { display: flex; align-items: center; gap: 12px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--stroke); background: var(--surface); min-width: 0; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: -.01em; flex: none; }
+.brand-mark { width: 26px; height: 26px; color: var(--accent); }
+.now { flex: 1; min-width: 0; text-align: center; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--soft); }
+.now b { color: var(--text); }
+.top-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.faces { display: flex; align-items: center; margin-right: 6px; }
+.faces .avatar { width: 30px; height: 30px; font-size: 11px; margin-left: -5px; box-shadow: 0 0 0 2px var(--surface); }
+.faces .avatar:first-child { margin-left: 0; }
+.faces .more { margin-left: 4px; font-size: 12px; color: var(--muted); }
+.main { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+
+/* --- sahne (video) -------------------------------------------------------------- */
+.stage { position: relative; background: #000; overflow: hidden; aspect-ratio: 16 / 9; max-height: 56dvh; width: 100%; }
+.screen { position: absolute; inset: 0; display: grid; place-items: center; }
+.screen video, .yt, .frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+.screen video { object-fit: contain; }
+.yt, .frame { display: none; }
+.stage.is-yt .yt, .stage.is-frame .frame { display: block; }
+.stage.is-yt video, .stage.is-frame video { display: none; }
+.yt iframe { width: 100%; height: 100%; }
+
+.subs { position: absolute; left: 50%; bottom: 9%; transform: translateX(-50%); width: 92%; display: flex; flex-direction: column; align-items: center; gap: .15em; pointer-events: none; z-index: 3;
+  font-size: calc(clamp(15px, 3.6vmin, 36px) * var(--sub-scale, 1)); font-weight: 600; line-height: 1.25; text-align: center; color: var(--sub-color, #fff); transition: bottom .2s; }
+.sub-line { padding: .06em .35em; border-radius: .2em; background: var(--sub-bg, transparent); text-shadow: 0 0 3px #000, 0 0 3px #000, 0 1px 2px #000; }
+.stage.show-controls .subs, .stage:not(.playing).has-media .subs { bottom: calc(9% + 64px); }
+
+.empty, .loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 20px; text-align: center; color: #fff; z-index: 4; }
+.empty { background: radial-gradient(600px 300px at 50% 40%, rgba(234,88,20,.18), transparent 70%), #0b0e15; }
+.empty-mark { width: 54px; height: 54px; color: var(--accent); }
+.empty-title { font-size: 18px; font-weight: 700; }
+.empty-hint { color: #9aa3b5; max-width: 320px; }
+.stage.has-media .empty { display: none; }
+.loading { display: none; background: rgba(0,0,0,.55); }
+.stage.loading .loading { display: flex; }
+.stage.waiting.playing .loading { display: flex; background: transparent; }
+.stage.waiting.playing .loading div:last-child { display: none; }
+.buffer-chip { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 6; padding: 6px 12px; border-radius: 999px; background: rgba(0,0,0,.7); color: #fff; font-size: 13px; font-weight: 600; }
+.prompt { position: absolute; inset: 0; z-index: 7; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; border: 0; background: rgba(0,0,0,.55); color: #fff; font-weight: 700; font-size: 16px; }
+.prompt .icon { width: 64px; height: 64px; padding: 18px; border-radius: 50%; background: var(--accent); }
+.nudge { position: absolute; top: 50%; transform: translateY(-50%); z-index: 5; padding: 12px 16px; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; font-weight: 800; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.nudge-back { left: 12%; } .nudge-fwd { right: 12%; }
+.stage[data-nudge="back"] .nudge-back, .stage[data-nudge="fwd"] .nudge-fwd { opacity: 1; }
+
+/* kontroller — uygulamanın oynatıcısıyla aynı (PlayerActivity + media3):
+   bütün görüntüyü karartan örtü, ortada geri/oynat/ileri, altta ekran boyu
+   ince çubuk, süre ve çark. */
+.controls { position: absolute; inset: 0; z-index: 8; color: #fff; background: rgba(0,0,0,.5); opacity: 0; transition: opacity .2s; pointer-events: none; }
+.stage.show-controls .controls, .stage.has-media:not(.playing) .controls, .stage.is-yt .controls, .stage.is-frame .controls { opacity: 1; pointer-events: auto; }
+.stage:not(.has-media) .controls { display: none; }
+.stage.fill .screen video { object-fit: cover; }
+@media (pointer: coarse) { .stage.has-media .screen { touch-action: none; } }
+
+.c-btn { position: relative; display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: inherit; }
+.c-btn:hover { background: rgba(255,255,255,.12); }
+.c-btn .icon { width: 24px; height: 24px; }
+.c-btn .dot { position: absolute; top: 8px; right: 8px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px rgba(0,0,0,.6); }
+
+.p-top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 2px; padding: calc(6px + var(--safe-t, 0px)) 10px 6px 18px; background: linear-gradient(rgba(0,0,0,.45), transparent); }
+.p-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 15px; visibility: hidden; }
+.app.cinema .p-title, .app.is-fs .p-title { visibility: visible; }
+
+.p-center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; gap: clamp(20px, 4vw, 40px); }
+.p-skip { width: 52px; height: 52px; }
+.p-skip .icon { width: 30px; height: 30px; }
+.p-main { width: clamp(44px, 5.5vmin, 60px); height: clamp(44px, 5.5vmin, 60px); background: #fff; color: #11141b; }
+.p-main:hover { background: #fff; transform: scale(1.04); }
+.p-main .icon { width: 46%; height: 46%; }
+.stage:not(.playing) .p-main .icon { margin-left: 6%; }
+
+.p-hint { position: absolute; top: 50%; width: 22px; height: 22px; margin-top: -11px; opacity: .55; display: none; pointer-events: none; }
+.p-hint-l { left: 16px; } .p-hint-r { right: 16px; }
+@media (pointer: coarse) { .p-hint { display: block; } }
+
+.p-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 8px calc(2px + var(--safe-b)); }
+.p-bar { position: relative; height: 24px; margin: 0 6px; }
+.c-seek { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; appearance: none; -webkit-appearance: none; background: transparent; z-index: 2; cursor: pointer; }
+.c-seek::-webkit-slider-runnable-track { height: 3px; border-radius: 3px; background: linear-gradient(#fff, #fff) 0 / var(--p, 0%) 100% no-repeat, rgba(255,255,255,.28); }
+.c-seek::-moz-range-track { height: 3px; border-radius: 3px; background: rgba(255,255,255,.28); }
+.c-seek::-moz-range-progress { height: 3px; border-radius: 3px; background: #fff; }
+.c-seek::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5.5px; border-radius: 50%; background: #fff; }
+.c-seek::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; }
+.c-buffered { position: absolute; left: 0; top: 50%; height: 3px; margin-top: -1.5px; width: 0; max-width: 100%; border-radius: 3px; background: rgba(255,255,255,.45); pointer-events: none; }
+.c-row { display: flex; align-items: center; gap: 2px; min-height: 44px; }
+.c-time { padding-left: 8px; font-size: 13px; font-variant-numeric: tabular-nums; white-space: pre; }
+.c-spacer { flex: 1; }
+.c-vol { width: 84px; accent-color: #fff; }
+.p-desk { display: none; }
+@media (hover: hover) and (pointer: fine) { .p-desk { display: grid; } .c-vol.p-desk { display: block; } }
+.c-lock { display: none; align-items: center; gap: 6px; margin-left: 10px; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,.14); font-size: 12px; font-weight: 600; }
+.c-lock .icon { width: 16px; height: 16px; }
+.stage.locked .c-lock { display: inline-flex; }
+.stage.locked .c-seek { pointer-events: none; opacity: .5; }
+.stage.locked .p-center { opacity: .5; }
+
+/* Sonraki bölüm: kontroller görünürken, son 5 dakikada (uygulamadaki gibi) */
+.p-next { position: absolute; right: 18px; bottom: 96px; z-index: 9; height: 40px; padding: 0 18px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 14px; box-shadow: 0 6px 18px rgba(0,0,0,.35); }
+.stage:not(.show-controls) .p-next { display: none; }
+
+/* çark menüsü: sağ altta, çarkın üstünde açılan kart */
+.p-menu { position: absolute; right: 14px; bottom: 60px; z-index: 10; width: min(260px, calc(100% - 28px)); max-height: calc(100% - 84px); overflow: auto; border: 1px solid #444e66; border-radius: 12px; background: rgba(24,28,38,.94); color: #f2f4f7; box-shadow: 0 12px 32px rgba(0,0,0,.45); }
+.p-menu-head { display: flex; align-items: center; gap: 4px; padding: 10px 12px 10px 10px; border-bottom: 1px solid #2d3548; }
+.p-menu-head b { font-size: 14.5px; padding-left: 4px; }
+.p-menu-back { border: 0; background: none; color: #c8d1e0; font-size: 22px; line-height: 1; padding: 0 8px 2px 4px; }
+.p-menu-body { padding: 4px 0; }
+.p-row { display: flex; align-items: center; width: 100%; padding: 10px 14px; border: 0; background: transparent; color: inherit; font-size: 13.5px; text-align: left; }
+.p-row:hover, .p-row:focus-visible { background: rgba(255,255,255,.08); outline: none; }
+.p-row-t { flex: 1; min-width: 0; }
+.p-row-v { color: #8b93a5; font-size: 13px; }
+.p-row-c { margin-left: 6px; color: var(--accent); font-weight: 700; font-size: 14px; }
+.p-chev { margin-left: 6px; font-size: 15px; }
+.p-div { height: 1px; margin: 4px 0; background: #2d3548; }
+
+/* kaydırma göstergesi (parlaklık / ses) */
+.p-indicator { position: absolute; left: 50%; top: 50%; z-index: 11; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 10px; padding: 12px 22px; border-radius: 24px; background: rgba(0,0,0,.7); color: #fff; font-size: 20px; font-weight: 700; pointer-events: none; }
+.p-indicator[hidden] { display: none; }
+.p-indicator .icon { width: 26px; height: 26px; }
+
+/* YouTube / gömülü sayfa: kendi kontrolleri var; bizden yalnız üst sağdaki düğmeler */
+.stage.is-yt .controls, .stage.is-frame .controls { inset: 0 0 auto auto; background: none; }
+.stage.is-yt .p-top, .stage.is-frame .p-top { position: static; background: none; padding: 8px; }
+.stage.is-yt .p-title, .stage.is-frame .p-title, .stage.is-yt .p-center, .stage.is-frame .p-center, .stage.is-yt .p-bottom, .stage.is-frame .p-bottom, .stage.is-yt .p-hint, .stage.is-frame .p-hint, .stage.is-yt [data-act=pip], .stage.is-frame [data-act=pip] { display: none; }
+[data-act=side] { display: none; }
+.controls [hidden], .p-next[hidden] { display: none; }
+
+/* yüzen görüşme kutusu */
+.call-dock { position: absolute; right: 12px; bottom: 76px; z-index: 12; width: clamp(150px, 24%, 280px); border-radius: 16px; overflow: hidden; background: #0c0f16; box-shadow: 0 12px 34px rgba(0,0,0,.5); touch-action: none; transition: width .2s; }
+.call-dock.big { width: min(56%, 620px); }
+.call-dock.dragging { transition: none; opacity: .92; }
+.call-remote { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #0c0f16; }
+.call-local { position: absolute; top: 8px; right: 8px; width: 30%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 10px; box-shadow: 0 0 0 2px rgba(255,255,255,.3); background: #222; transform: scaleX(-1); }
+.call-dock.no-remote-video .call-remote, .call-dock.audio-only .call-remote { aspect-ratio: auto; height: 0; }
+.call-dock.audio-only { width: auto; border-radius: 999px; }
+.call-bar { display: flex; align-items: center; gap: 2px; padding: 4px 6px; color: #fff; background: rgba(12,15,22,.92); }
+.call-bar .c-btn { width: 36px; height: 36px; }
+.call-bar .c-btn .icon { width: 19px; height: 19px; }
+.call-bar .c-btn.off { background: var(--danger); }
+.call-bar .c-btn.end { background: var(--danger); margin-left: auto; }
+.call-vol { width: 64px; flex: 1; min-width: 40px; accent-color: #fff; }
+.call-dock[data-conn="disconnected"] { box-shadow: 0 0 0 2px var(--warn), 0 12px 34px rgba(0,0,0,.5); }
+
+/* sinema modunda son mesajlar video üstünde */
+.float-chat { position: absolute; left: 12px; bottom: 76px; z-index: 9; width: min(360px, 60%); display: none; flex-direction: column; gap: 6px; pointer-events: none; }
+.float-msg { align-self: flex-start; max-width: 100%; padding: 6px 12px; border-radius: 14px; background: rgba(12,15,22,.72); color: #fff; font-size: 14px; backdrop-filter: blur(6px); animation: float-in .2s ease-out; overflow-wrap: anywhere; }
+.float-msg b { margin-right: 6px; }
+.float-msg.out { opacity: 0; transition: opacity .6s; }
+@keyframes float-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* --- yan panel ------------------------------------------------------------------ */
+.side { min-height: 0; display: flex; flex-direction: column; background: var(--surface); }
+.tabs { display: flex; align-items: center; gap: 4px; padding: 8px 8px 0; border-bottom: 1px solid var(--stroke); flex: none; }
+.tab { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 0 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-weight: 600; font-size: 14px; }
+.tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.tab .icon { width: 19px; height: 19px; }
+.tab .badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: #fff; font-size: 11px; line-height: 18px; font-weight: 700; }
+.tab .count { font-size: 12px; color: var(--muted); }
+.side-close { display: none; }
+.panel { display: none; flex: 1; min-height: 0; flex-direction: column; }
+.panel.on { display: flex; }
+.panel.scroll { overflow-y: auto; padding: 14px 14px calc(18px + var(--safe-b)); gap: 18px; }
+
+/* sohbet */
+.messages { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 12px 8px; display: flex; flex-direction: column; gap: 10px; overscroll-behavior: contain; }
+.msg { display: flex; gap: 8px; align-items: flex-end; max-width: 92%; }
+.msg .avatar { width: 28px; height: 28px; font-size: 11px; }
+.msg-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.msg-name { font-size: 12px; font-weight: 700; }
+.msg-bubble { padding: 8px 12px; border-radius: 16px 16px 16px 4px; background: var(--surface-2); overflow-wrap: anywhere; white-space: pre-wrap; }
+.msg-time { font-size: 11px; color: var(--muted); }
+.msg.me { align-self: flex-end; flex-direction: row-reverse; }
+.msg.me .msg-body { align-items: flex-end; }
+.msg.me .msg-bubble { background: var(--accent); color: var(--accent-ink); border-radius: 16px 16px 4px 16px; }
+.msg.me .msg-name { display: none; }
+.msg.cont .avatar { visibility: hidden; }
+.msg.cont .msg-name { display: none; }
+.sys { align-self: center; max-width: 92%; padding: 4px 12px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-size: 12.5px; text-align: center; }
+.sys b { color: var(--soft); }
+.composer { display: flex; gap: 8px; padding: 10px 12px calc(10px + var(--safe-b)); border-top: 1px solid var(--stroke); flex: none; }
+.composer .field { border-radius: 999px; }
+.composer .btn.icon { flex: none; width: 42px; height: 42px; }
+
+/* kişiler */
+.call-actions { display: flex; gap: 8px; padding: 14px 14px 4px; }
+.call-actions .btn { flex: 1; }
+.people { padding: 8px 8px; overflow-y: auto; }
+.person { display: flex; align-items: center; gap: 12px; padding: 10px 8px; border-radius: 12px; }
+.person:hover { background: var(--surface-2); }
+.person-name { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.person-name small { margin-left: 6px; font-weight: 500; color: var(--muted); }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 700; }
+.tag .icon { width: 13px; height: 13px; }
+.host-box { margin: 8px 14px calc(14px + var(--safe-b)); padding: 14px; border-radius: var(--r); background: var(--surface-2); display: flex; flex-direction: column; gap: 10px; }
+.host-box h3 { margin: 0; font-size: 14px; }
+.host-box .muted { font-size: 13px; margin: -4px 0 0; }
+
+/* içerik */
+.lib-section { display: flex; flex-direction: column; gap: 10px; }
+.lib-h { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; color: var(--soft); }
+.lib-h .icon { width: 17px; height: 17px; }
+.lib-status { font-size: 13px; }
+.now-card { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: var(--r); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+.now-poster { width: 48px; height: 68px; border-radius: 8px; object-fit: cover; flex: none; background: var(--surface-3); }
+.now-poster.ph, .card-poster.ph, .sug-poster.ph { display: grid; place-items: center; color: var(--muted); }
+.now-text { flex: 1; min-width: 0; }
+.eyebrow { font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.now-title { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 12px; }
+.card { display: flex; flex-direction: column; gap: 6px; padding: 0; border: 0; background: none; text-align: left; min-width: 0; }
+.card-poster { width: 100%; aspect-ratio: 2 / 3; border-radius: 10px; object-fit: cover; background: var(--surface-2); transition: transform .15s; }
+.card:hover .card-poster { transform: translateY(-2px); }
+.card-title { font-weight: 600; font-size: 13.5px; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card-meta { font-size: 12px; color: var(--muted); }
+.lib-detail { display: flex; flex-direction: column; gap: 12px; }
+.detail-head { display: flex; align-items: center; gap: 12px; }
+.detail-poster { width: 54px; height: 78px; border-radius: 8px; object-fit: cover; flex: none; }
+.detail-text { min-width: 0; }
+.detail-title { font-weight: 800; font-size: 17px; line-height: 1.2; }
+.ep-list { display: flex; flex-direction: column; gap: 2px; }
+.ep { display: flex; align-items: center; gap: 12px; padding: 8px 6px 8px 10px; border-radius: 12px; }
+.ep:hover { background: var(--surface-2); }
+.ep.on { background: var(--accent-soft); }
+.ep-no { width: 28px; text-align: center; font-weight: 800; color: var(--muted); font-variant-numeric: tabular-nums; display: grid; place-items: center; }
+.ep.on .ep-no { color: var(--accent); }
+.ep-label { flex: 1; min-width: 0; font-size: 14px; }
+.sug-list { display: flex; flex-direction: column; gap: 8px; }
+.sug { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 12px; background: var(--surface-2); }
+.sug-poster { width: 36px; height: 50px; border-radius: 6px; object-fit: cover; flex: none; background: var(--surface-3); }
+.sug-text { flex: 1; min-width: 0; }
+.sug-title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sug-text .muted { font-size: 12px; }
+#library.loading::after { content: "Açılıyor…"; position: sticky; bottom: 0; align-self: center; padding: 6px 14px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; }
+
+/* --- sayfa (alt sayfa / pencere) ------------------------------------------------ */
+.scrim { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.45); animation: fade .15s; }
+.sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; max-height: 86dvh; overflow-y: auto; padding: 8px 18px calc(20px + var(--safe-b)); border-radius: 22px 22px 0 0; background: var(--surface); box-shadow: var(--shadow); animation: up .2s ease-out; }
+.sheet::before { content: ""; display: block; width: 40px; height: 4px; margin: 4px auto 12px; border-radius: 2px; background: var(--stroke); }
+.sheet h2 { margin: 4px 0 14px; font-size: 18px; }
+.sheet-sec { margin: 14px 0 6px; font-size: 12.5px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.opt { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 46px; padding: 0 12px; border: 0; border-radius: 12px; background: transparent; text-align: left; font-weight: 500; }
+.opt:hover { background: var(--surface-2); }
+.opt .icon { color: var(--muted); }
+.opt.on { color: var(--accent); font-weight: 700; }
+.opt.on .icon { color: var(--accent); }
+.opt.danger { color: var(--danger); }
+.opt.danger .icon { color: var(--danger); }
+.opt-list { display: flex; flex-direction: column; }
+.invite-link { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 14px; border-radius: 14px; background: var(--surface-2); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+.invite-link span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.incoming { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 0 6px; text-align: center; }
+.incoming-title { margin-top: 8px; font-size: 20px; font-weight: 800; }
+.incoming .row { margin-top: 18px; gap: 40px; }
+.range-row { display: flex; align-items: center; gap: 12px; }
+.range-row input { flex: 1; accent-color: var(--accent); }
+@keyframes up { from { transform: translateY(30px); opacity: 0; } }
+@keyframes fade { from { opacity: 0; } }
+
+.toasts { position: fixed; top: calc(var(--top) + 10px); left: 50%; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; width: min(92vw, 420px); }
+.toast { padding: 9px 16px; border-radius: 999px; background: rgba(20,24,34,.94); color: #fff; font-size: 14px; font-weight: 600; box-shadow: var(--shadow); animation: up .2s ease-out; text-align: center; }
+.toast.ok { background: #1f7a45; } .toast.warn { background: #8a5a00; } .toast.err { background: #b3261e; }
+.toast.out { opacity: 0; transition: opacity .35s; }
+
+.hide-sm { display: none; }
+.app.drawer-open .float-chat { display: none !important; }
+@media (max-width: 599px) {
+  .brand-name, .faces { display: none; }
+  .c-vol { display: none; }
+  .now { text-align: left; }
+}
+@media (hover: none) { .c-vol { display: none; } }
+@media (max-width: 599px) { .c-lock span { display: none; } .c-lock { padding: 6px; } }
+/* Küçük görüşme kutusunda ses çubuğu sığmıyor (yatay telefonda kapat düğmesi
+   kesiliyordu); büyütülünce görünür. */
+@media (max-width: 900px), (max-height: 560px) { .call-dock:not(.big) .call-vol { display: none; } .call-dock { min-width: 184px; } }
+
+/* --- geniş ekran: tablet yatay / PC --------------------------------------------- */
+@media (min-width: 900px) and (min-aspect-ratio: 1 / 1) {
+  .main { grid-template-rows: none; grid-template-columns: minmax(0, 1fr) var(--side-w); }
+  .stage { aspect-ratio: auto; max-height: none; height: 100%; }
+  .side { border-left: 1px solid var(--stroke); }
+  .hide-sm { display: inline; }
+  .sheet { left: 50%; right: auto; bottom: auto; top: 50%; width: min(460px, 92vw); transform: translate(-50%, -50%); border-radius: 22px; animation: fade .15s; }
+  .sheet::before { display: none; }
+  .toasts { top: calc(var(--top) + 14px); }
+}
+@media (min-width: 600px) { .hide-sm { display: inline; } }
+
+/* --- sinema: telefon yatay ya da tam ekran ----------------------------------------
+   `.cinema` JS'ten gelir (oda.js layout): karar görünen alanın değil CİHAZ
+   ekranının boyutuna bakar. Görünen yüksekliğe bakan medya sorgusu klavye
+   açılınca tableti "yatay telefon" sanıp sohbeti gizliyordu (tablette görüldü). */
+.app.cinema { grid-template-rows: minmax(0, 1fr); }
+.app.cinema .topbar { display: none; }
+.app.cinema .main { grid-template-rows: minmax(0, 1fr); grid-template-columns: none; }
+.app.cinema .stage { aspect-ratio: auto; max-height: none; height: 100dvh; }
+.app.cinema [data-act=side] { display: grid; }
+.app.cinema .float-chat { display: flex; }
+.app.cinema .side { position: fixed; top: 0; right: 0; bottom: 0; z-index: 30; width: min(380px, 48vw); transform: translateX(105%); transition: transform .22s ease-out; box-shadow: var(--shadow); border-left: 1px solid var(--stroke); padding-right: var(--safe-r); }
+.app.cinema.drawer-open .side { transform: none; }
+.app.cinema .side-close { display: grid; flex: none; }
+.app.cinema .sheet { left: auto; right: 12px; top: 12px; bottom: 12px; width: min(420px, 60vw); max-height: none; border-radius: 20px; }
+.app.cinema .sheet::before { display: none; }
+.app.cinema .toasts { top: 12px; }
+.app.cinema .call-dock { bottom: 64px; width: clamp(130px, 20%, 220px); }
+.app.is-fs { grid-template-rows: minmax(0, 1fr); }
+.app.is-fs .topbar { display: none; }
+.app.is-fs .main { grid-template-rows: minmax(0, 1fr); grid-template-columns: none; }
+.app.is-fs .stage { aspect-ratio: auto; max-height: none; height: 100dvh; }
+.app.is-fs [data-act=side] { display: grid; }
+.app.is-fs .float-chat { display: flex; }
+.app.is-fs .side { position: fixed; top: 0; right: 0; bottom: 0; z-index: 30; width: min(400px, 42vw); transform: translateX(105%); transition: transform .22s ease-out; box-shadow: var(--shadow); }
+.app.is-fs.drawer-open .side { transform: none; }
+.app.is-fs .side-close { display: grid; flex: none; }
+.app.is-fs .toasts { top: 12px; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+.stage.prompting .controls, .stage.prompting .p-next { display: none; }
+/* Kısa sahne (dikey telefonda 16:9 şerit): ortadaki düğmeler, "Sonraki bölüm"
+   ve altyazı üst üste binmesin. Karar ekran değil sahnenin kendi yüksekliği. */
+.stage { container-type: size; }
+@container (max-height: 300px) {
+  .p-center { gap: 18px; }
+  .p-skip { width: 40px; height: 40px; }
+  .p-skip .icon { width: 24px; height: 24px; }
+  .p-main { width: 42px; height: 42px; }
+  .p-next { bottom: 60px; right: 10px; height: 30px; padding: 0 12px; font-size: 12.5px; }
+  .p-top { padding-top: 2px; padding-bottom: 2px; }
+  .p-hint { display: none; }
+  .stage.show-controls .subs, .stage:not(.playing).has-media .subs { bottom: 9%; }
+}

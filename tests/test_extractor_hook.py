@@ -3,7 +3,7 @@
 Neden bu kanca var: bu tek istek oynatılacak CDN düğümünü seçiyor ve Android
 arm64'te curl-cffi ile istenince ölü bir adres dönüyor (telefonda ölçüldü:
 segmentler 504/522; aynı zincir PC'de istendiğinde dönen adres telefonun
-proxy'sinden bile 200 veriyor). Perde'nin çalışan Node sürümü de bu adımı
+proxy'sinden bile 200 veriyor). Eski birlikte izleme sayfasının çalışan Node sürümü de bu adımı
 taklitle değil gerçek tarayıcıyla yapıyor.
 
 Testler ağa çıkmaz: sahte Network + sahte kanca ile hangi yolun seçildiğine

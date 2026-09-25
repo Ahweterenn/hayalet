@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from hayalet.perde import cloudflared as C
+from hayalet.oda import cloudflared as C
 
 GERCEK_YANIT = json.dumps({
     "success": True,

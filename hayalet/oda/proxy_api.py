@@ -1,6 +1,6 @@
 """`/api/proxy` — video/altyazı trafiğini kendi üstümüzden geçirir.
 
-Perde'nin Node sürümündeki proxy'nin karşılığı, iki farkla:
+Eski Node sürümündeki proxy'nin karşılığı, iki farkla:
 
 1. **curl-cffi** kullanılıyor (düz istek değil). Dizipal'in master playlist'i
    düz HTTP'de kararsız; TLS parmak izi taklidi bunu çözüyor.
@@ -19,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 
 from curl_cffi import requests as creq
 
-from hayalet.perde import guard, manifest
+from hayalet.oda import guard, manifest
 
 _CHUNK = 64 * 1024
 _TIMEOUT_MANIFEST = 25
@@ -53,10 +53,15 @@ class ProxyContext:
 
 
 def _session(ctx: ProxyContext):
-    s = getattr(_local, "sess", None)
+    # Kimliğe göre ayrı oturum: odanın içinden başka siteye geçilince
+    # (ör. yalnız chrome kabul eden webdramaturkey) iş parçacığının ilk
+    # kimlikle kurulmuş oturumu eskisiyle istemeye devam ediyordu.
+    by_imp = getattr(_local, "sessions", None)
+    if by_imp is None:
+        by_imp = _local.sessions = {}
+    s = by_imp.get(ctx.impersonate)
     if s is None:
-        s = creq.Session(impersonate=ctx.impersonate)
-        _local.sess = s
+        s = by_imp[ctx.impersonate] = creq.Session(impersonate=ctx.impersonate)
     return s
 
 
@@ -242,7 +247,7 @@ def _handle(environ, ctx: ProxyContext, room_lookup, seg: "_SegIzni") -> tuple:
         return _text("504 Gateway Timeout", f"Kaynak yanıt vermedi ({type(e).__name__}).")
 
     # Bazı sağlayıcılarda ses playlist'i ld.php altında 404 dönüyor; aynı
-    # query ile l.php bir kez denenir (Perde'den gelen bilinen düzeltme).
+    # query ile l.php bir kez denenir (eski Node sürümünden gelen bilinen düzeltme).
     if resp.status_code == 404 and "/ld.php" in target and "ldRetry" not in environ.get("QUERY_STRING", ""):
         alt = target.replace("/ld.php", "/l.php")
         try:
@@ -344,12 +349,12 @@ def _read_all(resp) -> bytes:
     BOŞ döner — gövde henüz okunmamıştır. Bu sessiz bir hata: proxy 200 ve
     0 bayt döndürüyordu, altyazılar boş geliyordu (telefonda ölçüldü).
     """
-    if getattr(resp, "_perde_body", None) is None:
+    if getattr(resp, "_govde_onbellek", None) is None:
         try:
-            resp._perde_body = b"".join(c for c in resp.iter_content(_CHUNK) if c)
+            resp._govde_onbellek = b"".join(c for c in resp.iter_content(_CHUNK) if c)
         except Exception:
-            resp._perde_body = b""
-    return resp._perde_body
+            resp._govde_onbellek = b""
+    return resp._govde_onbellek
 
 
 def _maybe_text(ctype: str) -> bool:

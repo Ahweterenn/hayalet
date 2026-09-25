@@ -1,4 +1,4 @@
-"""Perde'nin saf mantığı — ağsız.
+"""Birlikte izleme odasının saf mantığı — ağsız.
 
 Buradakiler "bizim kodumuz bozuldu mu" sorusunu cevaplar; sitenin/CDN'in hâlâ
 öyle davrandığını doğrulamaz (onun için canlı deneme gerekir).
@@ -7,9 +7,9 @@ import threading
 
 import pytest
 
-from hayalet.perde import guard, manifest
-from hayalet.perde import rooms as R
-from hayalet.perde import tunnel as T
+from hayalet.oda import guard, manifest
+from hayalet.oda import rooms as R
+from hayalet.oda import tunnel as T
 
 
 # --- oda / lider --------------------------------------------------------
@@ -339,7 +339,7 @@ class _SahteOturum:
 
 def _proxy_cagir(monkeypatch, yanit, target, ctx=None):
     from urllib.parse import urlencode
-    from hayalet.perde import guard, proxy_api
+    from hayalet.oda import guard, proxy_api
 
     monkeypatch.setattr(proxy_api, "_session", lambda c: _SahteOturum(yanit))
     monkeypatch.setattr(guard, "check_target", lambda url: "203.0.113.5")
@@ -370,7 +370,7 @@ def test_akis_modunda_alinan_playlist_bos_donmemeli(monkeypatch):
 def test_bos_playlist_onbellege_alinmaz(monkeypatch):
     """Boş gövde önbelleğe girerse geçici aksaklık KALICI takılmaya dönüşür:
     sonraki istekler de boş cevabı yer."""
-    from hayalet.perde import proxy_api
+    from hayalet.oda import proxy_api
 
     ctx = proxy_api.ProxyContext()
     target = "https://sn.ornek.site/l.php?v=abc"
@@ -419,7 +419,7 @@ class _SayanOturum:
 
 def _segment_istegi(monkeypatch, oturum, ctx, url, menzil=None):
     from urllib.parse import urlencode
-    from hayalet.perde import guard, proxy_api
+    from hayalet.oda import guard, proxy_api
 
     monkeypatch.setattr(proxy_api, "_session", lambda c: oturum)
     monkeypatch.setattr(guard, "check_target", lambda u: "203.0.113.5")
@@ -437,7 +437,7 @@ _SEGMENT = b"\x47" + b"video-baytlari" * 50
 def test_ayni_segment_ikinci_kez_yukari_akisa_gitmez(monkeypatch):
     """Odadaki her izleyici aynı segmenti istiyor; eskiden her istek ayrı bir
     indirme başlatıyordu (üç izleyici = aynı 1 MB'ın üç kez inmesi)."""
-    from hayalet.perde import proxy_api
+    from hayalet.oda import proxy_api
 
     ctx = proxy_api.ProxyContext()
     oturum = _SayanOturum(_SEGMENT)
@@ -452,7 +452,7 @@ def test_ayni_segment_ikinci_kez_yukari_akisa_gitmez(monkeypatch):
 def test_es_zamanli_iki_istek_tek_indirme_yapar(monkeypatch):
     """Senkron oda: ikinci izleyicinin isteği birincisi HÂLÂ inerken gelir.
     Tek uçuş olmazsa iki indirme birden başlar."""
-    from hayalet.perde import proxy_api
+    from hayalet.oda import proxy_api
 
     ctx = proxy_api.ProxyContext()
     oturum = _SayanOturum(_SEGMENT, gecikme=0.4)
@@ -472,7 +472,7 @@ def test_es_zamanli_iki_istek_tek_indirme_yapar(monkeypatch):
 def test_menzilli_istek_onbellege_takilmaz(monkeypatch):
     """Range'li istekte gövde parça parça; önbelleğe alırsak yanlış baytları
     servis ederiz."""
-    from hayalet.perde import proxy_api
+    from hayalet.oda import proxy_api
 
     ctx = proxy_api.ProxyContext()
     oturum = _SayanOturum(_SEGMENT)
@@ -484,7 +484,7 @@ def test_menzilli_istek_onbellege_takilmaz(monkeypatch):
 
 def test_onbellek_bellegi_sinirli():
     """Telefonda sınırsız segment biriktirmek uygulamayı şişirir."""
-    from hayalet.perde.manifest import SegmentCache
+    from hayalet.oda.manifest import SegmentCache
 
     c = SegmentCache(max_bytes=1000, max_item=400)
     c.put("a", b"x" * 400, "video/mp2t")
@@ -501,7 +501,7 @@ def test_octet_stream_segment_de_onbellege_girer(monkeypatch):
     """Bazı kaynaklar segmenti `application/octet-stream` ile veriyor; o yanıt
     "gizli manifest" dalına düşüyor ve orası önbelleği atlıyordu — odadaki her
     izleyici yine ayrı indirme yapıyordu (telefonda ölçüldü)."""
-    from hayalet.perde import proxy_api
+    from hayalet.oda import proxy_api
 
     ctx = proxy_api.ProxyContext()
     oturum = _SayanOturum(_SEGMENT, ctype="application/octet-stream")
@@ -514,25 +514,38 @@ def test_octet_stream_segment_de_onbellege_girer(monkeypatch):
 
 # --- davet -> oda kimligi tasiniyor mu ----------------------------------
 def test_davet_sayfasi_oda_kimligini_tasir():
-    """Katıl düğmesi `room`u düşürürse room.js sabit 'PERDE' odasına düşüyor:
+    """Davet oda kimliğini düşürürse misafir sabit varsayılan odaya düşüyor:
     linkten girenler o hayalet odada buluşuyor, ev sahibi kendi odasında
     yalnız kalıyor (sohbet geçmiyor, odaya gönderilen video görünmüyor).
-    Telefonda ölçüldü — sunucuda iki oda birden vardı."""
-    from pathlib import Path
+    Telefonda ölçüldü — sunucuda iki oda birden vardı.
 
-    kaynak = (Path(__file__).resolve().parents[1]
-              / "hayalet" / "perde" / "public" / "invite.html").read_text(encoding="utf-8")
-    assert "'/room.html?username='" not in kaynak, "oda kimliği yine düşürülüyor"
-    assert "get('room')" in kaynak and "set('room'" in kaynak
+    Eskiden bunu ayrı bir davet sayfası (invite.html) taşıyordu; yeni
+    arayüzde isim ekranı oda sayfasının içinde ve kimliği `/i`
+    yönlendirmesi veriyor. Sınanan davranış aynı."""
+    pytest.importorskip("socketio")
+    from hayalet.oda import server as psrv
+
+    srv = psrv.OdaServer(port=0, room_id="ABC123")
+    yakalanan = {}
+
+    def start_response(status, headers):
+        yakalanan["status"] = status
+        yakalanan["headers"] = dict(headers)
+
+    for yol in ("/i", "/"):
+        srv._wsgi({"PATH_INFO": yol, "QUERY_STRING": "", "REQUEST_METHOD": "GET"},
+                  start_response)
+        assert yakalanan["status"].startswith("302")
+        assert "room=ABC123" in yakalanan["headers"]["Location"], "oda kimliği düşürülüyor"
 
 
 def test_odasiz_room_html_varsayilan_odaya_yonlendirilir():
     """Misafirin tarayıcısında ESKİ davet sayfası önbellekte kalabilir; sunucu
-    da kendi odasına almalı ki kimse 'PERDE'ye düşmesin."""
-    socketio = pytest.importorskip("socketio")          # perde ekstrası
-    from hayalet.perde import server as psrv
+    da kendi odasına almalı ki kimse varsayılan odaya düşmesin."""
+    socketio = pytest.importorskip("socketio")          # oda ekstrası
+    from hayalet.oda import server as psrv
 
-    srv = psrv.PerdeServer(port=0, room_id="ABC123")
+    srv = psrv.OdaServer(port=0, room_id="ABC123")
     yakalanan = {}
 
     def start_response(status, headers):
@@ -592,7 +605,7 @@ class _SahteSio:
 
 
 def _oda_kur(token="GIZLI", environ=None):
-    from hayalet.perde import events
+    from hayalet.oda import events
     store = R.RoomStore()
     sio = _SahteSio(environ)
     events.register(sio, store, token)
@@ -635,7 +648,7 @@ def test_sikistirilmis_yanitta_uzunluk_iletilmez(monkeypatch):
     """curl-cffi gövdeyi açarak veriyor ama `content-length` sıkıştırılmış
     boyutu söylüyor; olduğu gibi iletilince istemci yanıtı kırpıyor
     (ölçüldü: 940 baytlık JSON 515 bayt olarak ulaştı, bozuk geldi)."""
-    from hayalet.perde import proxy_api
+    from hayalet.oda import proxy_api
 
     class _Gzipli(_SahteYanit):
         def __init__(self, govde):
@@ -651,7 +664,7 @@ def test_sikistirilmis_yanitta_uzunluk_iletilmez(monkeypatch):
 
     monkeypatch.setattr(proxy_api, "_session", lambda c: type(
         "O", (), {"get": lambda self, url, **kw: _Gzipli(govde)})())
-    from hayalet.perde import guard
+    from hayalet.oda import guard
     monkeypatch.setattr(guard, "check_target", lambda u: "203.0.113.5")
     from urllib.parse import urlencode
     env = {"REQUEST_METHOD": "GET",

@@ -18,7 +18,7 @@ _V4_MAPPED = re.compile(r"^::ffff:(\d+\.\d+\.\d+\.\d+)$", re.I)
 def is_blocked_host(hostname: str | None) -> bool:
     """Özel/loopback/link-local hedefleri engeller.
 
-    Perde'nin regex listesi yerine `ipaddress` kullanılıyor: aynı işi yapar
+    Eski Node sürümünün regex listesi yerine `ipaddress` kullanılıyor: aynı işi yapar
     ama IPv6 ve sıra dışı gösterimleri (0x7f.1, ::ffff:127.0.0.1, 2130706433)
     da yakalar — regex bunları kaçırıyordu.
     """

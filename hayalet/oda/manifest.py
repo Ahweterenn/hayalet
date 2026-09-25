@@ -1,6 +1,6 @@
 """m3u8 manifest'ini kendi proxy'mize göre yeniden yazar + önbellek.
 
-Saf metin işi — ağ yok, pytest ile denenebilir. Perde'nin Node sürümündeki
+Saf metin işi — ağ yok, pytest ile denenebilir. Eski Node sürümündeki
 `rewriteManifestBody` / `makeBuildProxyUrl` / `manifestTtlMs` karşılığı.
 
 Neden gerekli: tarayıcı segmentleri doğrudan CDN'den çekemez (CORS + çoğu

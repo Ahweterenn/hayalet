@@ -19,11 +19,11 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-# Perde (birlikte izleme) sunucusu. Android derlemesi bunlari build.gradle
-# uzerinden kuruyordu; masaustunde `pip install -e ".[perde]"` olmadan
-# hayalet.perde.server IMPORT EDILEMIYOR (olculdu) — hatayi ancak telefonda
+# Birlikte izleme odasının sunucusu. Android derlemesi bunlari build.gradle
+# uzerinden kuruyordu; masaustunde `pip install -e ".[oda]"` olmadan
+# hayalet.oda.server IMPORT EDILEMIYOR (olculdu) — hatayi ancak telefonda
 # gorursun, o yuzden burada da dursun.
-perde = [
+oda = [
     "python-socketio>=5.11",
     "simple-websocket>=1.0",
     "werkzeug>=3.0",
