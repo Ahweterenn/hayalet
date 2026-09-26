@@ -668,7 +668,10 @@ class HLSProxy:
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.port = self.httpd.server_address[1]
         self.base = f"http://127.0.0.1:{self.port}"
-        self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        # poll_interval: shutdown() bu süre kadar bekliyor; varsayılan 0.5 sn
+        # bölümden bölüme geçişte her seferinde bekleme olarak yansıyordu.
+        self._thread = threading.Thread(target=self.httpd.serve_forever,
+                                        kwargs={"poll_interval": 0.05}, daemon=True)
 
     def _record_bytes(self, n: int, start: float, end: float) -> None:
         """Bir origin fetch'inin bayt sayısını + o fetch'in ne kadar sürdüğünü kaydeder.

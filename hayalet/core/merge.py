@@ -60,16 +60,36 @@ def _resolve(net, session, bolum_url):
 def _resolve_both(net, session, orig_url, dub_url):
     """Orijinal ve dublaj bölümünü AYNI ANDA çözer (eskiden ardışıktı: iki tam
     zincir üst üste biniyordu). Tek bir curl-cffi istemcisi iş parçacıkları
-    arasında paylaşılmasın diye ikinci kaynak kendi Network'ünü kullanır."""
-    if not (orig_url and dub_url):
-        return (_resolve(net, session, orig_url) if orig_url else None,
-                _resolve(net, session, dub_url) if dub_url else None)
+    arasında paylaşılmasın diye ikinci kaynak kendi Network'ünü kullanır.
+
+    Adreslerden biri çağrılabilir de olabilir (karşı sürümün adresini bulan
+    işlev): o zaman bilinen adresin çözümü HEMEN başlar, karşı sürüm araması
+    bu sırada yapılır. Eskiden önce arama + bölüm listesi bekleniyordu (ölçüm:
+    ~0.5 sn PC'de), çözüm ondan sonra başlıyordu."""
     import concurrent.futures
-    net2 = Network(session)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-        f_orig = ex.submit(_resolve, net, session, orig_url)
-        f_dub = ex.submit(_resolve, net2, session, dub_url)
-        return f_orig.result(), f_dub.result()
+    urls = [orig_url, dub_url]
+    lazy = [i for i, u in enumerate(urls) if callable(u)]
+    if not lazy:
+        if not (orig_url and dub_url):
+            return (_resolve(net, session, orig_url) if orig_url else None,
+                    _resolve(net, session, dub_url) if dub_url else None)
+    known = 1 - lazy[0] if lazy else 0
+    out = [None, None]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        f = ex.submit(_resolve, Network(session), session, urls[known]) if urls[known] else None
+        other = urls[1 - known]
+        if callable(other):
+            try:
+                other = other()
+            except Exception:  # karşı sürüm bulunamadı → tek sürümle devam
+                other = None
+        out[1 - known] = _resolve(net, session, other) if other else None
+        out[known] = f.result() if f else None
+    return out[0], out[1]
+
+
+_counterpart_cache: dict = {}   # (base_url, slug, want_dubbed) -> (zaman, [Episode] | None)
+_COUNTERPART_TTL = 600.0
 
 
 def _counterpart_episode(net, session, series, season, number):
@@ -77,6 +97,23 @@ def _counterpart_episode(net, session, series, season, number):
         return None
     eps = catalog.get_episodes(net, session, series)
     return catalog.match_episode(eps, season, number)
+
+
+def _counterpart_url(net, session, series, want_dubbed, season, number):
+    """Karşı sürümün aynı bölümünün adresi. Arama + bölüm listesi bir dizi
+    için bir kez yapılır: bölümden bölüme geçerken her seferinde yeniden
+    aranıyordu (iki istek, sonraki bölümün bekleme süresine ekleniyordu)."""
+    import time
+    key = (session.base_url, series.slug, want_dubbed)
+    hit = _counterpart_cache.get(key)
+    if hit and time.time() - hit[0] < _COUNTERPART_TTL:
+        eps = hit[1]
+    else:
+        other = catalog.find_counterpart(net, session, series, want_dubbed=want_dubbed)
+        eps = catalog.get_episodes(net, session, other) if other else None
+        _counterpart_cache[key] = (time.time(), eps)
+    ep = catalog.match_episode(eps, season, number) if eps else None
+    return ep.url if ep else None
 
 
 def _audios_from(src, default_name: str, force_tr: bool | None):
@@ -194,23 +231,17 @@ def probe_video(net: Network, master_url: str, referer: str | None,
 
 def build_merged(net: Network, session: SessionState,
                  episode: Episode, series: Series) -> MergedStream:
-    # Sürümleri sınıflandır ve karşı sürümün bölümünü bul
-    if catalog.is_dubbed(series):
-        dub_series = series
-        orig_series = catalog.find_counterpart(net, session, series, want_dubbed=False)
-        dub_ep = episode
-        orig_ep = _counterpart_episode(net, session, orig_series,
-                                       episode.season, episode.number)
-    else:
-        orig_series = series
-        dub_series = catalog.find_counterpart(net, session, series, want_dubbed=True)
-        orig_ep = episode
-        dub_ep = _counterpart_episode(net, session, dub_series,
-                                      episode.season, episode.number)
+    # Sürümleri sınıflandır; karşı sürümün bölümü çözüm sırasında bulunur
+    dubbed = catalog.is_dubbed(series)
 
-    orig, dub = _resolve_both(net, session,
-                              orig_ep.url if orig_ep else None,
-                              dub_ep.url if dub_ep else None)
+    def karsi():
+        return _counterpart_url(net, session, series, not dubbed,
+                                episode.season, episode.number)
+
+    if dubbed:
+        orig, dub = _resolve_both(net, session, karsi, episode.url)
+    else:
+        orig, dub = _resolve_both(net, session, episode.url, karsi)
 
     if not orig and not dub:
         # Seçilen kaynağı doğrudan çözmeyi dene → anlamlı hata yükselsin

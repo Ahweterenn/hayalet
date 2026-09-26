@@ -24,6 +24,8 @@ from hayalet.core.models import Episode, Series, next_episode
 # bölümleri; bir izleme akşamı için rahat yeter, sınırsız büyümez.
 _MAX_REFS = 3000
 _MAX_RESULTS = 24
+# Akış adresleri belirteçli; eski ön çözüm kullanılmasın.
+_PREFETCH_TTL = 600.0
 
 
 @dataclass
@@ -66,6 +68,9 @@ class Catalog:
         self._lock = threading.Lock()
         # Dizinin bölüm listesi: sonraki bölümü bulmak için tekrar indirmeyelim.
         self._episodes: dict[str, list[Episode]] = {}
+        # Önceden çözülen akışlar: (site, slug, sezon, bölüm) -> (zaman, Future)
+        self._streams: dict[tuple, tuple] = {}
+        self._pf_pool = None
 
     # --- ref tablosu -------------------------------------------------------
     def _put(self, kind: str, *obj) -> str:
@@ -125,7 +130,7 @@ class Catalog:
         from hayalet.core import sites
         series, ep = self._get(episode_ref, "episode")
         net, session = self._context_for(series.site)
-        stream = sites.SITES[series.site].build_stream(net, session, ep, series)
+        stream = self._take_prefetched(series, ep) or             sites.SITES[series.site].build_stream(net, session, ep, series)
         movie = _is_movie(series)
         subs = ([{"url": stream.subtitle_url, "label": "Türkçe"}]
                 if getattr(stream, "subtitle_url", None) else [])
@@ -139,6 +144,42 @@ class Catalog:
                  "subtitle": "" if movie else _episode_label(ep, False, full=True),
                  "poster": series.poster_url or "",
                  "hasNext": self._next(series, ep) is not None})
+
+    def prefetch_next(self, episode_ref: str) -> None:
+        """Sıradaki bölümün akışını arka planda çözer; resolve() hazır
+        sonucu alır. Tek işçi: aynı anda birden fazla ön çözüm olmasın."""
+        import concurrent.futures
+        import time
+        from hayalet.core import sites
+        from hayalet.core.network import Network
+        try:
+            series, ep = self._get(episode_ref, "episode")
+        except CatalogError:
+            return
+        nxt = self._next(series, ep)
+        if nxt is None:
+            return
+        key = (series.site, series.slug, nxt.season, nxt.number)
+        hit = self._streams.get(key)
+        if hit and time.time() - hit[0] < _PREFETCH_TTL:
+            return
+        _net, session = self._context_for(series.site)
+        if self._pf_pool is None:
+            self._pf_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # Kendi istemcisiyle: paylaşılan curl-cffi istemcisi aynı anda iki
+        # iş parçacığından kullanılamaz.
+        self._streams[key] = (time.time(), self._pf_pool.submit(
+            sites.SITES[series.site].build_stream, Network(session), session, nxt, series))
+
+    def _take_prefetched(self, series: Series, ep: Episode):
+        import time
+        hit = self._streams.pop((series.site, series.slug, ep.season, ep.number), None)
+        if not hit or time.time() - hit[0] >= _PREFETCH_TTL:
+            return None
+        try:
+            return hit[1].result()   # sürüyorsa bekler: baştan çözmekten hızlı
+        except Exception:
+            return None
 
     def next_of(self, episode_ref: str) -> str | None:
         """Sıradaki bölümün ref'i; son bölümse ya da bilinmiyorsa None."""

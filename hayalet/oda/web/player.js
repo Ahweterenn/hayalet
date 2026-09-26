@@ -32,6 +32,8 @@ const SUB_COLORS = [['Beyaz', '#ffffff'], ['Sarı', '#ffe94a']];
 const SUB_BGS = [['Yok', 'none'], ['Yarı saydam', 'soft'], ['Koyu', 'solid']];
 // "Sonraki bölüm" düğmesi bölümün son 5 dakikasında (PlayerActivity.NEXT_WINDOW_MS).
 const NEXT_WINDOW = 5 * 60;
+// Bitmesine bu kadar kala (jenerik) bir kez sonraki bölüm kartı.
+const UP_NEXT = 25;
 const pad2 = n => String(n).padStart(2, '0');
 const clock = sec => {
     sec = Math.max(0, Math.floor(isFinite(sec) ? sec : 0));
@@ -48,6 +50,7 @@ export class Player {
         // Menü açıksa parça listesi değişince (kalite/ses/altyazı) tazelensin.
         this.onChange = () => { this._refreshMenu(); changed(); };
         this.onNext = null;
+        this.onPrefetch = null;
         this.onEnded = null;
         this.fill = false;
         this.brightness = 1;
@@ -128,6 +131,9 @@ export class Player {
         if (!url) return this.clear();
         const token = ++this.loadToken;
         this._teardown();
+        this._upOffered = false;
+        this._prefetched = false;
+        this.hideUpNext();
         this.localBufferingReported = false;
         this.roomBuffering = false;
         this.resumeAfterBuffering = false;
@@ -384,7 +390,8 @@ export class Player {
         v.addEventListener('waiting', () => { this.root.classList.add('waiting'); if (this.mode === 'html5') this._bufferSchedule(v.currentTime); });
         v.addEventListener('stalled', () => { if (this.mode === 'html5') this._bufferSchedule(v.currentTime); });
         for (const ev of ['playing', 'canplay']) v.addEventListener(ev, () => { this.root.classList.remove('waiting'); if (this.mode === 'html5') this._bufferEnd(v.currentTime); });
-        v.addEventListener('ended', () => { if (this.onEnded) this.onEnded(); });
+        // Bitince: ev sahibinde 5 sn geri sayımlı kart (uygulamadaki gibi).
+        v.addEventListener('ended', () => { if (this.onNext) this.showUpNext(5); else if (this.onEnded) this.onEnded(); });
         v.addEventListener('timeupdate', () => this._updateTime());
         v.addEventListener('progress', () => this._updateTime());
         v.addEventListener('durationchange', () => this._updateTime());
@@ -513,28 +520,39 @@ export class Player {
     setLevel(id) { if (this.hls) { this.hls.currentLevel = id; this.onChange(); } }
     setAudio(id) { if (this.hls) { this.hls.audioTrack = id; this.onChange(); } }
 
-    // --- kontroller (uygulamanın oynatıcısıyla aynı: PlayerActivity) ---------
+    // --- kontroller (uygulamanın oynatıcısıyla aynı: PlayerControls.java) -----
     _bindControls() {
         const r = this.root;
         this.ui = {
-            play: $('[data-act=play]', r), time: $('.c-time', r), seek: $('.c-seek', r),
+            play: $('[data-act=play]', r), time: $('.c-time', r), end: $('.c-end', r), seek: $('.c-seek', r),
             buffered: $('.c-buffered', r), mute: $('[data-act=mute]', r), vol: $('.c-vol', r),
-            next: $('[data-act=next]', r), menu: $('#p-menu', r), indicator: $('.p-indicator', r),
+            next: $('[data-act=next]', r), fit: $('[data-act=fit]', r), menu: $('#p-menu', r),
+            indicator: $('.p-indicator', r), scrub: $('.p-scrub', r), unlock: $('.p-unlock', r),
+            bubbleL: $('.p-bubble-l', r), bubbleR: $('.p-bubble-r', r), upnext: $('.p-upnext', r),
         };
+        this.locked = false;
+        this.showRemaining = true;
         const denied = () => toast('Kumanda şu an yalnız ev sahibinde.', 'warn');
         this.ui.play.addEventListener('click', () => this.toggle());
         $('[data-act=back]', r).addEventListener('click', () => this.nudge(-10));
         $('[data-act=fwd]', r).addEventListener('click', () => this.nudge(10));
-        this.ui.seek.addEventListener('input', () => { this._scrubbing = true; this._updateTime(this.ui.seek.value * this.duration() / 1000); });
+        this.ui.seek.addEventListener('input', () => { this._scrubbing = true; this._keep(); this._updateTime(this.ui.seek.value * this.duration() / 1000); });
         this.ui.seek.addEventListener('change', () => {
             this._scrubbing = false;
             if (!this.canControl) { denied(); return this._updateTime(); }
             this.seekTo(this.ui.seek.value * this.duration() / 1000);
+            this.showControls(true);
         });
+        // Kalan süre / toplam süre arasında geçiş (uygulamadaki gibi).
+        this.ui.end.addEventListener('click', () => { this.showRemaining = !this.showRemaining; this._updateTime(); });
         this.ui.mute.addEventListener('click', () => { this.video.muted = !this.video.muted; if (!this.video.muted && this.video.volume === 0) this.video.volume = 0.6; });
         this.ui.vol.addEventListener('input', () => { this.video.volume = this.ui.vol.value / 100; this.video.muted = this.video.volume === 0; });
-        this.ui.next.addEventListener('click', () => { if (this.onNext) this.onNext(); });
+        this.ui.next.addEventListener('click', () => { this.hideUpNext(); if (this.onNext) this.onNext(); });
+        this.ui.fit.addEventListener('click', () => { this.setFill(!this.fill); this.showControls(true); });
+        $('[data-act=tracks]', r).addEventListener('click', () => this.openMenu('main'));
         $('[data-act=settings]', r).addEventListener('click', () => this.toggleMenu());
+        $('[data-act=lock]', r).addEventListener('click', () => this.setLocked(true));
+        this.ui.unlock.addEventListener('click', () => this.setLocked(false));
 
         const pip = $('[data-act=pip]', r);
         if (document.pictureInPictureEnabled) {
@@ -546,24 +564,31 @@ export class Player {
             });
         }
         this._bindGestures();
-        for (const ev of ['pointermove', 'focusin']) r.addEventListener(ev, e => { if (e.pointerType !== 'touch') this.showControls(true); });
+        for (const ev of ['pointermove', 'focusin']) r.addEventListener(ev, e => { if (e.pointerType !== 'touch' && !this.locked) this.showControls(true); });
         this._updateVolume();
         this.setCanControl(true);
     }
 
-    // Dokunmatikte uygulamadaki hareketler: tek dokunuş kontrolleri açar/kapar,
-    // çift dokunuş ya da iki parmak "sığdır / doldur" arasında geçer, sol
-    // yarıda dikey kaydırma parlaklık, sağ yarıda ses. Farede tek tık
+    // Dokunmatikte uygulamadaki hareketler: tek dokunuş kontrolleri açar/kapar;
+    // kenarlarda çift dokunuş geri/ileri sarar (art arda dokunuşlar birikir),
+    // ortada çift dokunuş ya da iki parmak sığdır/doldur; yana kaydırma zamanda
+    // sarar; dikey kaydırma sol yarıda parlaklık, sağ yarıda ses. Farede tek tık
     // oynat/durdur, çift tık tam ekran (masaüstü alışkanlığı).
     _bindGestures() {
         const r = this.root, screen = $('.screen', r);
-        const skip = e => e.target.closest('.controls button, .controls input, .p-menu, .p-next, .prompt, .empty, .yt, .frame');
+        const skip = e => e.target.closest('.controls button, .controls input, .p-menu, .p-upnext, .p-unlock, .prompt, .empty, .yt, .frame');
         const pts = new Map();
         let lastTap = 0, tapTimer = null, swipe = null, pinch0 = 0, gestured = false;
+        let lastSeek = 0, lastSide = 0;
+        const sideOf = e => {
+            const rect = screen.getBoundingClientRect();
+            const x = (e.clientX - rect.left) / rect.width;
+            return x < 0.35 ? -1 : x > 0.65 ? 1 : 0;
+        };
         const reset = () => { swipe = null; pinch0 = 0; if (gestured) this._indicateEnd(); gestured = false; };
 
         screen.addEventListener('pointerdown', e => {
-            if (skip(e)) return;
+            if (skip(e) || this.locked) return;
             pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
             if (pts.size === 2) {
                 const [a, b] = [...pts.values()];
@@ -571,7 +596,7 @@ export class Player {
                 swipe = null;
             } else if (pts.size === 1 && e.pointerType !== 'mouse') {
                 const rect = screen.getBoundingClientRect();
-                swipe = { x: e.clientX, y: e.clientY, h: rect.height, left: e.clientX - rect.left < rect.width / 2, mode: null, start: 0 };
+                swipe = { x: e.clientX, y: e.clientY, w: rect.width, h: rect.height, left: e.clientX - rect.left < rect.width / 2, mode: null, start: 0 };
             }
         });
         screen.addEventListener('pointermove', e => {
@@ -586,38 +611,68 @@ export class Player {
                 return;
             }
             if (!swipe || this.mode !== 'html5') return;
+            const dy = e.clientY - swipe.y, dx = e.clientX - swipe.x;
             if (!swipe.mode) {
-                const dy = e.clientY - swipe.y, dx = e.clientX - swipe.x;
-                if (Math.abs(dy) < 16 || Math.abs(dy) < Math.abs(dx) * 1.5) return;
-                swipe.mode = swipe.left ? 'bright' : 'vol';
-                swipe.y = e.clientY;
-                swipe.start = swipe.mode === 'bright' ? this.brightness : (this.video.muted ? 0 : this.video.volume);
+                if (Math.abs(dy) > 16 && Math.abs(dy) > Math.abs(dx) * 1.5) {
+                    swipe.mode = swipe.left ? 'bright' : 'vol';
+                    swipe.y = e.clientY;
+                    swipe.start = swipe.mode === 'bright' ? this.brightness : (this.video.muted ? 0 : this.video.volume);
+                } else if (Math.abs(dx) > 24 && Math.abs(dx) > Math.abs(dy) * 1.5 && this.duration()) {
+                    // Yana kaydırma: zamanda sarma (ekran genişliği = 2 dakika).
+                    swipe.mode = 'seek';
+                    swipe.x = e.clientX;
+                    swipe.start = this.time();
+                } else return;
                 gestured = true;
+            }
+            if (swipe.mode === 'seek') {
+                const delta = (e.clientX - swipe.x) / Math.max(1, swipe.w) * 120;
+                swipe.target = Math.max(0, Math.min(this.duration(), swipe.start + delta));
+                this._scrubHud(swipe.target, swipe.target - swipe.start);
+                return;
             }
             // Ekranın tam yüksekliği ≈ %100 değişim.
             const delta = (swipe.y - e.clientY) / Math.max(1, swipe.h) * 1.2;
             if (swipe.mode === 'bright') {
                 const v = Math.max(0.15, Math.min(1, swipe.start + delta));
                 this.setBrightness(v);
-                this._indicate('brightness', Math.round(v * 100) + '%');
+                this._indicate('brightness', v, Math.round(v * 100) + '%');
             } else {
                 const v = Math.max(0, Math.min(1, swipe.start + delta));
                 this.video.volume = v; this.video.muted = v === 0;
-                this._indicate(v === 0 ? 'mute' : 'volume', Math.round(v * 100) + '%');
+                this._indicate(v === 0 ? 'mute' : 'volume', v, Math.round(v * 100) + '%');
             }
         });
-        screen.addEventListener('pointercancel', e => { pts.delete(e.pointerId); if (!pts.size) reset(); });
+        const finishSeek = commit => {
+            if (swipe && swipe.mode === 'seek') {
+                this.ui.scrub.hidden = true;
+                if (commit && typeof swipe.target === 'number') this.seekTo(swipe.target);
+            }
+        };
+        screen.addEventListener('pointercancel', e => { pts.delete(e.pointerId); if (!pts.size) { finishSeek(false); reset(); } });
         screen.addEventListener('pointerup', e => {
+            if (this.locked) {
+                if (!skip(e)) this._flashUnlock();
+                return;
+            }
             pts.delete(e.pointerId);
             if (pts.size) return;
+            finishSeek(true);
             const was = gestured;
             reset();
             if (was || skip(e)) return;
             if (!this.ui.menu.hidden) return this.closeMenu();
             const now = Date.now();
+            const side = sideOf(e);
+            // Çift dokunuşla sarma sürerken aynı taraftaki her dokunuş biraz daha sarar.
+            if (e.pointerType !== 'mouse' && side && side === lastSide && now - lastSeek < 700) {
+                clearTimeout(tapTimer); lastTap = 0; lastSeek = now;
+                return this.nudge(side * 10, false);
+            }
             if (now - lastTap < 300) {
                 clearTimeout(tapTimer); lastTap = 0;
                 if (e.pointerType === 'mouse') return this.onDoubleTap && this.onDoubleTap();
+                if (side) { lastSeek = now; lastSide = side; return this.nudge(side * 10, false); }
                 return this.setFill(!this.fill);
             }
             lastTap = now;
@@ -631,6 +686,7 @@ export class Player {
     setFill(on) {
         this.fill = !!on;
         this.root.classList.toggle('fill', this.fill);
+        if (this.ui) $('span', this.ui.fit).textContent = this.fill ? 'Sığdır' : 'Doldur';
     }
 
     /** Tarayıcı ekran parlaklığına erişemiyor; görüntü karartılır (%15–100). */
@@ -639,24 +695,45 @@ export class Player {
         this.video.style.filter = v < 0.995 ? `brightness(${v.toFixed(2)})` : '';
     }
 
-    _indicate(name, text) {
+    /** Parlaklık / ses göstergesi: simge + dolum çubuğu + yüzde. */
+    _indicate(name, fraction, text) {
         const el = this.ui.indicator;
         clearTimeout(this._indT);
-        el.replaceChildren(icon(name), h('span', {}, text));
+        el.replaceChildren(icon(name), h('i', { class: 'p-ind-bar' }, h('b', { style: { width: Math.round(fraction * 100) + '%' } })), h('span', {}, text));
         el.hidden = false;
     }
     _indicateEnd() {
         clearTimeout(this._indT);
-        this._indT = setTimeout(() => { this.ui.indicator.hidden = true; }, 700);
+        this._indT = setTimeout(() => { this.ui.indicator.hidden = true; }, 600);
+    }
+
+    _scrubHud(target, delta) {
+        this.ui.scrub.textContent = `${clock(target)}   ${delta >= 0 ? '+' : '−'}${clock(Math.abs(delta))}`;
+        this.ui.scrub.hidden = false;
+    }
+
+    // --- kilit -----------------------------------------------------------------
+    setLocked(on) {
+        this.locked = !!on;
+        this.root.classList.toggle('locked-screen', this.locked);
+        if (this.locked) { this.showControls(false); this._flashUnlock(); }
+        else { this.ui.unlock.hidden = true; this.showControls(true); }
+    }
+    _flashUnlock() {
+        this.ui.unlock.hidden = false;
+        clearTimeout(this._unlockT);
+        this._unlockT = setTimeout(() => { if (this.locked) this.ui.unlock.hidden = true; }, 2500);
     }
 
     showControls(on) {
         clearTimeout(this._hideT);
+        if (on && this.locked) return;
         this.root.classList.toggle('show-controls', on);
-        // Menü açıkken kontroller kendiliğinden kapanmaz.
-        if (on && this.playing() && this.ui.menu.hidden) this._hideT = setTimeout(() => this.root.classList.remove('show-controls'), 3000);
+        // Menü açıkken ya da sürüklerken kontroller kendiliğinden kapanmaz.
+        if (on && this.playing() && this.ui.menu.hidden && !this._scrubbing) this._hideT = setTimeout(() => this.root.classList.remove('show-controls'), 3500);
         if (!on && !this.ui.menu.hidden) this.closeMenu();
     }
+    _keep() { clearTimeout(this._hideT); }
 
     toggle() {
         if (!this.hasMedia() || this.mode === 'youtube') return;
@@ -678,20 +755,57 @@ export class Player {
         this.video.currentTime = Math.max(0, Math.min(t, this.duration() || t));
     }
 
-    nudge(s) {
+    /** ±s saniye sar; balon art arda sarmaları toplar ("« 30 sn"). */
+    nudge(s, reveal = true) {
         if (this.mode !== 'html5') return;
         if (!this.canControl) return toast('Kumanda şu an yalnız ev sahibinde.', 'warn');
         this.seekTo(this.video.currentTime + s);
-        this.root.dataset.nudge = s > 0 ? 'fwd' : 'back';
-        clearTimeout(this._nudgeT);
-        this._nudgeT = setTimeout(() => delete this.root.dataset.nudge, 500);
-        this.showControls(true);
+        const fwd = s > 0;
+        if (this._bubbleFwd !== fwd) this._bubbleSum = 0;
+        this._bubbleFwd = fwd;
+        this._bubbleSum = (this._bubbleSum || 0) + Math.abs(s);
+        const [on, off] = fwd ? [this.ui.bubbleR, this.ui.bubbleL] : [this.ui.bubbleL, this.ui.bubbleR];
+        off.hidden = true;
+        on.textContent = fwd ? `${this._bubbleSum} sn  »` : `«  ${this._bubbleSum} sn`;
+        on.hidden = false;
+        clearTimeout(this._bubbleT);
+        this._bubbleT = setTimeout(() => { this._bubbleSum = 0; on.hidden = true; }, 750);
+        if (reveal) this.showControls(true);
     }
 
-    /** "Sonraki bölüm" düğmesi: fn verilirse son 5 dakikada görünür. */
+    /** "Sonraki bölüm": fn verilirse hap son 5 dakikada, kart jenerikte ve
+     *  bölüm bitince (5 sn geri sayım) çıkar. Yalnız ev sahibinde verilir. */
     setNext(fn) {
         this.onNext = fn || null;
+        if (!fn) this.hideUpNext();
         this._updateTime();
+    }
+
+    showUpNext(seconds) {
+        if (!this.onNext) return;
+        clearInterval(this._upT);
+        const title = $('#p-title') ? $('#p-title').textContent : '';
+        const play = h('button', { class: 'btn light', type: 'button', onclick: () => { this.hideUpNext(); if (this.onNext) this.onNext(); } },
+            icon('play'), h('span', {}, 'Oynat'));
+        const cancel = h('button', { class: 'btn glass', type: 'button', onclick: () => this.hideUpNext() }, 'İptal');
+        this.ui.upnext.replaceChildren(h('div', { class: 'p-up-k' }, 'SONRAKİ BÖLÜM'), h('div', { class: 'p-up-t' }, title),
+            h('div', { class: 'p-up-row' }, play, cancel));
+        this.ui.upnext.hidden = false;
+        if (seconds > 0) {
+            let n = seconds;
+            const label = $('span', play);
+            label.textContent = `Oynat (${n})`;
+            this._upT = setInterval(() => {
+                if (this.ui.upnext.hidden) return clearInterval(this._upT);
+                if (--n <= 0) { this.hideUpNext(); if (this.onNext) this.onNext(); return; }
+                label.textContent = `Oynat (${n})`;
+            }, 1000);
+        }
+    }
+
+    hideUpNext() {
+        clearInterval(this._upT);
+        if (this.ui) this.ui.upnext.hidden = true;
     }
 
     _updateControls() {
@@ -699,15 +813,15 @@ export class Player {
         this.root.classList.toggle('playing', playing);
         this.ui.play.replaceChildren(icon(playing ? 'pause' : 'play'));
         this.ui.play.setAttribute('aria-label', playing ? 'Duraklat' : 'Oynat');
-        if (!playing) this.showControls(true); else this.showControls(this.root.classList.contains('show-controls'));
+        if (!playing && !this.locked) this.showControls(true); else this.showControls(this.root.classList.contains('show-controls'));
         this._updateTime();
     }
 
     _updateTime(preview) {
         const d = this.duration();
         const t = typeof preview === 'number' ? preview : this.time();
-        // Uygulamadaki biçim: "00:32 · 53:52".
-        this.ui.time.textContent = d ? `${clock(t)}  ·  ${clock(d)}` : clock(t);
+        this.ui.time.textContent = clock(t);
+        this.ui.end.textContent = d ? (this.showRemaining ? '-' + clock(Math.max(0, d - t)) : clock(d)) : '';
         if (!this._scrubbing && d) this.ui.seek.value = String(Math.round(t / d * 1000));
         this.ui.seek.style.setProperty('--p', d ? (t / d * 100) + '%' : '0%');
         if (this.mode === 'html5' && d && this.video.buffered.length) {
@@ -715,7 +829,19 @@ export class Player {
             for (let i = 0; i < this.video.buffered.length; i++) if (this.video.buffered.start(i) <= t + 1) end = Math.max(end, this.video.buffered.end(i));
             this.ui.buffered.style.width = (end / d * 100) + '%';
         }
-        this.ui.next.hidden = !(this.onNext && this.mode === 'html5' && d && d - t <= NEXT_WINDOW);
+        const left = d ? d - t : Infinity;
+        this.ui.next.hidden = !(this.onNext && this.mode === 'html5' && left <= NEXT_WINDOW);
+        // Son dakikalar: sunucu sonraki bölümü şimdiden çözsün (geçişte bekleme olmasın).
+        if (this.onNext && this.onPrefetch && this.mode === 'html5' && left <= NEXT_WINDOW
+            && typeof preview !== 'number' && !this._prefetched) {
+            this._prefetched = true;
+            this.onPrefetch();
+        }
+        // Jenerik: bir kez kart (uygulamadaki gibi).
+        if (this.onNext && this.mode === 'html5' && left <= UP_NEXT && !this._upOffered && this.playing()) {
+            this._upOffered = true;
+            this.showUpNext(0);
+        }
     }
 
     _updateVolume() {

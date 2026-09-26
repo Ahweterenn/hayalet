@@ -82,12 +82,17 @@ sunucudaki kayıttan gelir; istemcinin bildirdiği ada güvenilmez.
 - Altyazı kendi katmanımızda çizilir; iz `hidden` modda tutulur. Bazı VTT'lerde
   aynı satır aynı zamanlı iki kez var (Slow Horses 1x01'de 4 yer): çizerken
   aynı anda görünen özdeş satırlar teke indirilir.
-- Oynatıcı uygulamanınkinin (PlayerActivity) kopyası: aynı düzen, çark menüsü
-  (Kalite/Ses/Altyazı + altyazı ayarları), son 5 dakikada "Sonraki bölüm",
-  dokunmatikte tek dokunuş kontroller, çift dokunuş / iki parmak doldur,
-  sol yarı parlaklık (görüntü karartılır, ekran parlaklığına erişim yok),
-  sağ yarı ses. **Hız menüsü bilerek yok**: odada herkes aynı hızda izler,
+- Oynatıcı uygulamanınkinin (PlayerControls.java) kopyası: iki satırlı
+  başlık; kilit, çark (sağdan kayan panel: Kalite/Ses/Altyazı + altyazı
+  ayarları); cam daire oynat; kalan/toplam süre geçişi; kenarda çift dokunuş
+  sarar (art arda birikir), ortada doldur; yana kaydırma zamanda sarar;
+  dikey kaydırma parlaklık/ses (dolum çubuklu gösterge). "Sonraki bölüm"
+  yalnız ev sahibinde: hap son 5 dk, jenerikte (son 25 sn) kart, bitince 5 sn
+  geri sayım. **Hız menüsü bilerek yok**: odada herkes aynı hızda izler,
   kayma düzeltmesi hızı zaten 1'e çekiyor.
+- PC'de denerken Dizipal CDN'i segmentlere 403 verebilir (ağdan); arayüzü
+  herkese açık bir test HLS'iyle (`set_video(..., now={..., "hasNext": True})`)
+  dene. Odaya konan içerik duraklatılmış başlar: betik önce oynat'a basmalı.
 - Kısa sahne (dikey telefonda 16:9 şerit) kararı `@container` ile sahnenin
   kendi yüksekliğinden verilir; ortadaki düğmeler, "Sonraki bölüm" ve
   altyazı üst üste biniyordu.

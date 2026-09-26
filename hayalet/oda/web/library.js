@@ -73,7 +73,7 @@ export class Library {
         if (this.detail && this.detail.seasons) this._renderDetail();
     }
 
-    setLoading(on) { this.root.classList.toggle('loading', !!on); }
+    setLoading(on) { this.root.classList.toggle('opening', !!on); }
 
     _renderNow() {
         const n = this.now;
@@ -167,7 +167,6 @@ export class Library {
             ref: ep.ref, title: d.title, poster: d.poster,
             subtitle: d.kind === 'film' ? '' : ep.label
         });
-        if (this.isLeader()) toast('Açılıyor…');
     }
 
     _sendLink() {
@@ -175,7 +174,6 @@ export class Library {
         if (!/^https?:\/\//i.test(url)) { this.linkIn.focus(); return toast('Geçerli bir bağlantı yapıştır.', 'warn'); }
         this._emit('set-video', { videoUrl: url });
         this.linkIn.value = '';
-        if (this.isLeader()) toast('Açılıyor…');
     }
 
     // --- öneriler ------------------------------------------------------------------

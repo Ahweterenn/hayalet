@@ -22,6 +22,9 @@
     <symbol id="i-replay10" viewBox="0 0 24 24"><path d="M12 5a7.5 7.5 0 1 1-7.3 9.2"/><path d="M12 2.2 8.6 5 12 7.8" fill="currentColor"/><text x="12" y="16.2" text-anchor="middle" font-size="7" font-weight="700" fill="currentColor" stroke="none" font-family="system-ui,sans-serif">10</text></symbol>
     <symbol id="i-forward10" viewBox="0 0 24 24"><path d="M12 5a7.5 7.5 0 1 0 7.3 9.2"/><path d="M12 2.2 15.4 5 12 7.8" fill="currentColor"/><text x="12" y="16.2" text-anchor="middle" font-size="7" font-weight="700" fill="currentColor" stroke="none" font-family="system-ui,sans-serif">10</text></symbol>
     <symbol id="i-brightness" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.2"/><path d="M12 6.8a5.2 5.2 0 0 1 0 10.4z" fill="currentColor"/><path d="M12 1.8v2M12 20.2v2M1.8 12h2M20.2 12h2M4.8 4.8l1.4 1.4M17.8 17.8l1.4 1.4M4.8 19.2l1.4-1.4M17.8 6.2l1.4-1.4"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zm-6 9a2 2 0 1 1 0-4 2 2 0 0 1 0 4zm3.1-9H8.9V6a3.1 3.1 0 0 1 6.2 0z"/></symbol>
+    <symbol id="i-unlock" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 17a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm6-9h-1V6A5 5 0 0 0 7 6h1.9a3.1 3.1 0 0 1 6.2 0v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zm0 12H6V10h12z"/></symbol>
+    <symbol id="i-aspect" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M19 12h-2v3h-3v2h5zM7 9h3V7H5v5h2zm14-6H3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h18a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 16H3V5h18z"/></symbol>
     <symbol id="i-gear" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.47.47 0 0 0-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.48.48 0 0 0-.12-.61zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4.5 5.5h15v10h-9L6 19.5v-4H4.5z"/></symbol>
     <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="16.5" cy="9.5" r="2.5"/><path d="M16 14.2c2.4.1 4 1.6 4.5 4.3"/></symbol>
@@ -100,16 +103,16 @@
         <div class="loading"><div class="spinner"></div><div>Hazırlanıyor…</div></div>
         <div class="buffer-chip" id="buffer-chip" hidden></div>
         <button class="prompt" hidden><svg class="icon"><use href="#i-play"/></svg><span>Başlatmak için dokun</span></button>
-        <div class="nudge nudge-back">−10</div><div class="nudge nudge-fwd">+10</div>
-
-        <!-- Uygulamanın oynatıcısıyla aynı düzen (PlayerActivity): üstte başlık,
-             ortada geri/oynat/ileri, kenarlarda parlaklık/ses ipucu, altta
-             ekran boyu çubuk + süre + çark. -->
+        <!-- Uygulamanin yeni oynaticisiyla (PlayerControls) ayni duzen: ustte
+             iki satirli baslik ve dugmeler, ortada cam daire oynat + sarma,
+             altta sure / cubuk / kalan sure ve haplar. -->
         <div class="controls">
           <div class="p-top">
-            <div class="p-title" id="p-title"></div>
+            <div class="p-titles"><div class="p-title" id="p-title"></div><div class="p-sub" id="p-sub"></div></div>
             <button class="c-btn" data-act="side" aria-label="Sohbet"><svg class="icon"><use href="#i-chat"/></svg><span class="dot" id="side-dot" hidden></span></button>
             <button class="c-btn" data-act="pip" aria-label="Mini ekran" hidden><svg class="icon"><use href="#i-pip"/></svg></button>
+            <button class="c-btn" data-act="lock" aria-label="Ekranı kilitle"><svg class="icon"><use href="#i-lock"/></svg></button>
+            <button class="c-btn" data-act="settings" aria-label="Oynatıcı ayarları"><svg class="icon"><use href="#i-gear"/></svg></button>
             <button class="c-btn" data-act="fs" aria-label="Tam ekran"><svg class="icon"><use href="#i-fs"/></svg></button>
           </div>
           <div class="p-center">
@@ -117,29 +120,35 @@
             <button class="c-btn p-main" data-act="play" aria-label="Oynat"></button>
             <button class="c-btn p-skip" data-act="fwd" aria-label="10 sn ileri"><svg class="icon"><use href="#i-forward10"/></svg></button>
           </div>
-          <svg class="icon p-hint p-hint-l" aria-hidden="true"><use href="#i-brightness"/></svg>
-          <svg class="icon p-hint p-hint-r" aria-hidden="true"><use href="#i-volume"/></svg>
           <div class="p-bottom">
-            <div class="p-bar">
-              <div class="c-buffered"></div>
-              <input class="c-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Konum">
+            <div class="p-timerow">
+              <span class="c-time">00:00</span>
+              <div class="p-bar">
+                <div class="c-buffered"></div>
+                <input class="c-seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Konum">
+              </div>
+              <button class="c-end" type="button" aria-label="Kalan süre / toplam süre"></button>
             </div>
             <div class="c-row">
-              <span class="c-time">00:00</span>
+              <button class="p-chip" data-act="tracks"><svg class="icon"><use href="#i-cc"/></svg><span>Ses ve altyazı</span></button>
+              <button class="p-chip" data-act="fit"><svg class="icon"><use href="#i-aspect"/></svg><span>Doldur</span></button>
               <span class="c-lock" title="Kumanda ev sahibinde"><svg class="icon"><use href="#i-remote"/></svg><span>Kumanda ev sahibinde</span></span>
               <span class="c-spacer"></span>
               <button class="c-btn p-desk" data-act="mute" aria-label="Ses"></button>
               <input class="c-vol p-desk" type="range" min="0" max="100" value="100" aria-label="Ses seviyesi">
-              <button class="c-btn" data-act="settings" aria-label="Oynatıcı ayarları"><svg class="icon"><use href="#i-gear"/></svg></button>
+              <button class="p-chip p-chip-next" data-act="next" hidden><svg class="icon"><use href="#i-next"/></svg><span>Sonraki bölüm</span></button>
             </div>
           </div>
         </div>
-        <button class="p-next" data-act="next" hidden>Sonraki bölüm ▸</button>
+        <div class="p-bubble p-bubble-l" hidden></div><div class="p-bubble p-bubble-r" hidden></div>
+        <div class="p-scrub" hidden></div>
+        <div class="p-indicator" hidden><svg class="icon"><use href="#i-volume"/></svg><i class="p-ind-bar"><b></b></i><span></span></div>
+        <button class="p-unlock" data-act="unlock" aria-label="Kilidi aç" hidden><svg class="icon"><use href="#i-unlock"/></svg></button>
+        <div class="p-upnext" hidden></div>
         <div class="p-menu" id="p-menu" hidden>
           <div class="p-menu-head"><button class="p-menu-back" aria-label="Geri">‹</button><b class="p-menu-title">Ayarlar</b></div>
           <div class="p-menu-body"></div>
         </div>
-        <div class="p-indicator" hidden><svg class="icon"><use href="#i-volume"/></svg><span></span></div>
       </div>
 
       <div class="float-chat" id="float-chat" aria-hidden="true"></div>

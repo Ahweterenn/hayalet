@@ -101,8 +101,6 @@ function start() {
 
     player = new Player($('#stage'), { roomId, emit });
     player.onDoubleTap = toggleFullscreen;
-    // Uygulamadaki gibi: bölüm bitince sıradaki açılır (yalnız ev sahibi ister).
-    player.onEnded = () => { if (state.isLeader && state.now.hasNext) emit('next-episode'); };
     call = new Call({ socket, roomId, me: () => me, dock: $('#call-dock'), onState: renderCallState });
     library = new Library({
         socket, roomId, root: $('#library'), isLeader: () => state.isLeader,
@@ -161,7 +159,7 @@ function bindSocket(emit) {
         player.load(videoUrl, subtitles || []);
         toast(now && now.title ? `Açıldı: ${now.title}` : 'Yeni içerik açıldı.', 'ok');
     });
-    socket.on('content-loading', ({ loading }) => { $('#stage').classList.toggle('loading', !!loading); library.setLoading(loading); });
+    socket.on('content-loading', ({ loading }) => { $('#stage').classList.toggle('opening', !!loading); library.setLoading(loading); });
 
     socket.on('play', ({ currentTime }) => player.remote('play', currentTime));
     socket.on('pause', ({ currentTime }) => player.remote('pause', currentTime));
@@ -258,6 +256,7 @@ function applyControl() {
 
 /** Oynatıcıdaki "Sonraki bölüm": yalnız ev sahibine, sırada bölüm varsa. */
 function syncNext() {
+    player.onPrefetch = () => socket.emit('prefetch-next', { roomId });
     player.setNext(state.isLeader && state.now.hasNext ? () => socket.emit('next-episode', { roomId }) : null);
 }
 
@@ -270,7 +269,8 @@ function setNow(now) {
         t.append(h('b', {}, state.now.title));
         if (state.now.subtitle) t.append(' · ', state.now.subtitle);
     }
-    $('#p-title').textContent = [state.now.title, state.now.subtitle].filter(Boolean).join(' · ');
+    $('#p-title').textContent = state.now.title || '';
+    $('#p-sub').textContent = state.now.subtitle || '';
     syncNext();
 }
 

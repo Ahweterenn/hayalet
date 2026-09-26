@@ -407,6 +407,17 @@ def register(sio, store: R.RoomStore, host_token: str,
         if nxt:
             background(play_ref, room, nxt, sid)
 
+    @sio.on("prefetch-next")
+    def prefetch_next(sid, data):
+        """Lider bölümün son dakikalarına girdi: sonrakini şimdiden çöz ki
+        geçişte oda "Açılıyor…" diye beklemesin."""
+        room = room_of(data)
+        if not room or catalog is None or not room.is_leader(sid):
+            return
+        pf = getattr(catalog, "prefetch_next", None)
+        if pf:
+            background(pf, room.now.get("ref", ""))
+
     @sio.on("suggestion-accept")
     def suggestion_accept(sid, data):
         room = room_of(data)
