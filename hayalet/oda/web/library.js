@@ -15,6 +15,7 @@ export class Library {
         this.catalog = false;
         this.now = {};
         this.suggestions = [];
+        this.queue = [];
         this.reqId = 0;
         this.detail = null;
         this.season = null;
@@ -27,6 +28,9 @@ export class Library {
     _build() {
         const r = this.root;
         this.nowBox = h('div', { class: 'now-card', hidden: true });
+        this.queueBox = h('section', { class: 'lib-section', hidden: true },
+            h('h3', { class: 'lib-h' }, icon('queue'), 'Sıradakiler', this.queueCount = h('span', { class: 'count' })),
+            this.queueList = h('div', { class: 'queue-list' }));
         this.sugBox = h('section', { class: 'lib-section', hidden: true },
             h('h3', { class: 'lib-h' }, icon('inbox'), 'Öneriler'),
             this.sugList = h('div', { class: 'sug-list' }));
@@ -44,11 +48,15 @@ export class Library {
             autocomplete: 'off', 'aria-label': 'Video bağlantısı'
         });
         this.linkBtn = h('button', { class: 'btn primary', onclick: () => this._sendLink() }, 'Aç');
+        this.linkQueueBtn = h('button', {
+            class: 'btn icon', 'aria-label': 'Sıraya ekle', title: 'Sıraya ekle', hidden: true,
+            onclick: () => this._sendLink(true)
+        }, icon('plus'));
         const linkBox = h('section', { class: 'lib-section' },
             h('h3', { class: 'lib-h' }, icon('link'), 'Bağlantı ile'),
-            h('div', { class: 'row gap' }, this.linkIn, this.linkBtn));
+            h('div', { class: 'row gap' }, this.linkIn, this.linkBtn, this.linkQueueBtn));
         this.linkIn.addEventListener('keydown', e => { if (e.key === 'Enter') this._sendLink(); });
-        r.append(this.nowBox, this.sugBox, this.searchBox, this.detailBox, linkBox);
+        r.append(this.nowBox, this.queueBox, this.sugBox, this.searchBox, this.detailBox, linkBox);
 
         const run = debounce(q => this._search(q), 400);
         this.searchIn.addEventListener('input', () => run(this.searchIn.value.trim()));
@@ -61,9 +69,35 @@ export class Library {
     refreshRole() {
         const leader = this.isLeader();
         this.linkBtn.textContent = leader ? 'Aç' : 'Öner';
+        this.linkQueueBtn.hidden = !leader;
         this.sugBox.hidden = !leader || !this.suggestions.length;
         this._renderNow();
+        this._renderQueue();
         if (this.detail) this._renderDetail();
+    }
+
+    // --- izleme sırası -----------------------------------------------------------
+    // Herkes görür; yalnız ev sahibi değiştirir (sunucu da denetler).
+    setQueue(items) {
+        this.queue = items || [];
+        this._renderQueue();
+    }
+
+    _renderQueue() {
+        const q = this.queue || [];
+        this.queueBox.hidden = !q.length;
+        this.queueCount.textContent = q.length ? String(q.length) : '';
+        const leader = this.isLeader();
+        this.queueList.replaceChildren(...q.map((it, i) => h('div', { class: 'q-item' },
+            h('span', { class: 'q-no' }, String(i + 1)),
+            it.poster ? h('img', { class: 'sug-poster', src: imgUrl(it.poster), alt: '' })
+                : h('div', { class: 'sug-poster ph' }, icon(it.kind === 'hayalet' ? 'film' : 'link')),
+            h('div', { class: 'sug-text' },
+                h('div', { class: 'sug-title' }, it.title || it.url || 'İçerik'),
+                h('div', { class: 'muted' }, [it.subtitle, it.by ? `${it.by} ekledi` : ''].filter(Boolean).join(' · '))),
+            leader && i > 0 ? h('button', { class: 'btn icon ghost', 'aria-label': 'Yukarı al', onclick: () => this._emit('queue-move', { id: it.id, delta: -1 }) }, icon('up')) : null,
+            leader ? h('button', { class: 'btn icon ghost', 'aria-label': 'Sıradan çıkar', onclick: () => this._emit('queue-remove', { id: it.id }) }, icon('close')) : null,
+            leader ? h('button', { class: 'btn icon primary', 'aria-label': 'Şimdi oynat', onclick: () => this._emit('queue-play', { id: it.id }) }, icon('play')) : null)));
     }
 
     setNow(now) {
@@ -153,6 +187,10 @@ export class Library {
                 return h('div', { class: 'ep' + (playing ? ' on' : '') },
                     h('span', { class: 'ep-no' }, d.kind === 'film' ? icon('film') : String(ep.number)),
                     h('span', { class: 'ep-label' }, ep.label),
+                    leader ? h('button', {
+                        class: 'btn icon sm ghost', 'aria-label': 'Sıraya ekle', title: 'Sıraya ekle',
+                        onclick: () => this._queue(d, ep)
+                    }, icon('plus')) : null,
                     h('button', {
                         class: 'btn sm ' + (leader ? 'primary' : 'ghost'),
                         onclick: () => this._pick(d, ep)
@@ -169,10 +207,18 @@ export class Library {
         });
     }
 
-    _sendLink() {
+    _queue(d, ep) {
+        this._emit('queue-add', {
+            ref: ep.ref, title: d.title, poster: d.poster,
+            subtitle: d.kind === 'film' ? '' : ep.label
+        });
+    }
+
+    _sendLink(toQueue = false) {
         const url = this.linkIn.value.trim();
         if (!/^https?:\/\//i.test(url)) { this.linkIn.focus(); return toast('Geçerli bir bağlantı yapıştır.', 'warn'); }
-        this._emit('set-video', { videoUrl: url });
+        if (toQueue) this._emit('queue-add', { url });
+        else this._emit('set-video', { videoUrl: url });
         this.linkIn.value = '';
     }
 
@@ -188,6 +234,7 @@ export class Library {
                 h('div', { class: 'sug-title' }, s.item.title || s.item.url || 'Öneri'),
                 h('div', { class: 'muted' }, [s.item.subtitle, `${s.by} önerdi`].filter(Boolean).join(' · '))),
             h('button', { class: 'btn icon ghost', 'aria-label': 'Kaldır', onclick: () => this._emit('suggestion-dismiss', { id: s.id }) }, icon('close')),
+            h('button', { class: 'btn icon ghost', 'aria-label': 'Sıraya ekle', title: 'Sıraya ekle', onclick: () => this._emit('suggestion-accept', { id: s.id, toQueue: true }) }, icon('plus')),
             h('button', { class: 'btn primary sm', onclick: () => this._emit('suggestion-accept', { id: s.id }) }, icon('play'), 'Aç'))));
     }
 
@@ -207,5 +254,6 @@ export class Library {
         });
         s.on('suggestions', ({ items }) => this.setSuggestions(items));
         s.on('suggestion-sent', ({ title }) => toast(`Önerin ev sahibine gitti: ${title || ''}`.trim(), 'ok'));
+        s.on('queue-added', ({ title }) => toast(`Sıraya eklendi: ${title || ''}`.trim(), 'ok'));
     }
 }

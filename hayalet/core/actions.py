@@ -198,7 +198,7 @@ def _build_watch_master(proxy, net: Network, session: SessionState, merged):
         variants = []
     if variants:
         vv = [(proxy.proxied(v.url, "m3u8", referer=merged.video_referer),
-               v.bandwidth, v.height) for v in variants]
+               v.bandwidth, v.height, v.codecs) for v in variants]
     else:
         vv = [(proxy.proxied(merged.video_master_url, "m3u8",
                              referer=merged.video_referer), 3000000, 0)]

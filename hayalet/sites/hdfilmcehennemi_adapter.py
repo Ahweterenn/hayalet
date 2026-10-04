@@ -398,6 +398,10 @@ def _poster(fragment: str, base_url: str) -> str:
 class HDFCAdapter:
     name = "hdfilmcehennemi"
     known_domain = "https://www.hdfilmcehennemi.nl"
+    # rplayer mobil kimliğe yalnız düşük kaliteyi veriyor. Ölçüldü (2026-10-04,
+    # aynı film): chrome_android/safari_ios -> "_,l,.urlset" (tek 480p varyant),
+    # masaüstü dört kimlik -> "_,l,n,.urlset" (480p + 1080p).
+    impersonates = ("chrome", "edge", "firefox", "safari")
 
     def resolve_domain(self, net: Network, session: SessionState,
                        override: str | None = None, use_cache: bool = True) -> str:
@@ -645,11 +649,31 @@ class HDFCAdapter:
         episodes.sort(key=lambda e: (e.season, e.number))
         return episodes
 
+    def has_source(self, net: Network, session: SessionState, series: Series) -> bool:
+        """Filmin sayfasında izleme kaynağı var mı (bkz. sites.filter_available).
+
+        Yalnız kaynak menüsü AÇIKÇA boşsa False: sayfa düzeni değişirse
+        her şeyi gizlemek yerine eskisi gibi gösterilsin. Dizilerde boş
+        sayfa görülmedi, onlara dokunulmuyor."""
+        if series.type.lower() in _SERIES_TYPES:
+            return True
+        page = net.get(series.url(session.base_url), referer=session.base_url,
+                       retries=1).text
+        if 'data-video="' in page:
+            return True
+        return not re.search(r'<nav class="video-alternatives">\s*</nav>', page)
+
     def build_stream(self, net: Network, session: SessionState,
                      episode: Episode, series: Series) -> MergedStream:
         page = net.get(episode.url, referer=session.base_url).text
         video_ids = re.findall(r'data-video="(\d+)"', page)
         if not video_ids:
+            # Site yeni filmleri kaynak yüklenmeden listeliyor: kaynak menüsü
+            # boş, sayfada yalnız fragman var (ölçüldü 2026-10-04: Resident Evil 2026).
+            if re.search(r'<nav class="video-alternatives">\s*</nav>', page):
+                raise ExtractError("Bu yapım sitede henüz izlenemiyor: kaynak "
+                                   "eklenmemiş, yalnız fragman var (büyük "
+                                   "ihtimalle hâlâ vizyonda).")
             raise ExtractError("hdfilmcehennemi: kaynak butonu (data-video) bulunamadı.")
 
         embed_url = None

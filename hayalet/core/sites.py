@@ -11,6 +11,10 @@ Adapter'lar `hayalet/sites/` altında yaşar ve import edildiklerinde kendilerin
 from __future__ import annotations
 
 import concurrent.futures
+import json
+import os
+import threading
+import time
 from typing import Protocol
 
 from hayalet.core import query as q
@@ -126,7 +130,10 @@ def _enrich_from_page(net: Network, session: SessionState, series: Series,
                       page_scan: bool) -> None:
     try:
         url = series.url(session.base_url)
-        resp = net.get(url, session=session)
+        # Eskiden `session=session` geçiliyordu: curl-cffi bilinmeyen argümanla
+        # TypeError veriyor, Network bunu ağ hatası sanıp ~3 sn yeniden deniyor,
+        # en sonda burada sessizce yutuluyordu — zenginleştirme hiç çalışmıyordu.
+        resp = net.get(url, referer=session.base_url)
         if resp.status_code != 200:
             return
         html = resp.text
@@ -181,7 +188,16 @@ def _enrich_from_page(net: Network, session: SessionState, series: Series,
                 series.rating = m_rate.group(1).replace(",", ".").strip()
 
         if not series.year:
-            m_yr = re.search(r'\b(19[5-9]\d|20[0-2]\d)\b', html[:4000])
+            # Tarih ("2026-10-02", Dizipal JSON-LD'si) ve URL ("w3.org/2000/svg")
+            # içindeki sayılar yıl değil: Dizipal'de yapımın yılı yerine sayfanın
+            # güncellenme yılı geliyordu (ölçüldü: 2021 dizisine 2026). Başta
+            # yoksa sitenin yıl bağlantısı (Dizipal: href=".../yil/2021").
+            # Arama tüm sayfada, ama yalnız ilk 4000 karakterde başlayan kabul:
+            # html[:4000] kesimi tarihi ortadan bölünce ileri-bakış işe yaramıyordu.
+            m_yr = re.search(r'(?<![\d\-/.:])(19[5-9]\d|20[0-2]\d)(?![\d\-])', html)
+            if m_yr and m_yr.start() >= 4000:
+                m_yr = None
+            m_yr = m_yr or re.search(r'/yil/(19[5-9]\d|20[0-2]\d)/?["\']', html)
             if m_yr:
                 series.year = m_yr.group(1).strip()
     except Exception:
@@ -327,9 +343,102 @@ def search_all(contexts: dict[str, tuple[Network, SessionState]], query: str) ->
             results.extend(fut.result())
         except Exception:
             pass  # bir site başarısız olursa diğerinin sonucu yine gösterilsin
+    # Kopya elemeden ÖNCE: tercih edilen sitenin kopyası kaynaksızsa öteki
+    # sitedeki oynatılabilir kopya kalmalı.
+    results = filter_available(contexts, results)
     return q.rank(query, _dedupe_cross_site(results))
 
 
 def suggest_all(contexts: dict[str, tuple[Network, SessionState]], query: str) -> list[Series]:
     """search_all sonuç vermediğinde tüm sitelerde paralel öneri arar."""
-    return q.rank(query, _dedupe_cross_site(_run_all("suggest", contexts, query)))
+    results = filter_available(contexts, _run_all("suggest", contexts, query))
+    return q.rank(query, _dedupe_cross_site(results))
+
+
+# --- Kaynağı olmayan yapımlar -------------------------------------------------
+# hdfilmcehennemi vizyondaki filmleri kaynak yüklenmeden listeliyor: sayfa var,
+# kaynak menüsü boş, yalnız fragman (ölçüldü 2026-10-04: Resident Evil 2026).
+# Arama/raf kartlarında bunu ele veren bir işaret yok; tek yol yapımın sayfasına
+# bakmak. Bunu `has_source` tanımlayan adapter'lar için paralel yapar, sonucu
+# diske yazar: kaynağı olan uzun süre, olmayan kısa süre (yüklenince geri
+# gelsin) hatırlanır. Süre sınırında cevap vermeyen yapım GÖSTERİLİR — emin
+# olmadan bir şeyi gizlemek, kaynaksız bir kartı göstermekten kötü.
+_AVAIL_TTL = {True: 30 * 86400, False: 6 * 3600}
+_AVAIL_DEADLINE = 4.0
+_avail_lock = threading.Lock()
+_avail_cache: dict | None = None
+
+
+def _avail_file():
+    from hayalet import config
+    return config.CACHE_DIR / "availability.json"
+
+
+def _avail_get() -> dict:
+    global _avail_cache
+    if _avail_cache is None:
+        try:
+            _avail_cache = json.loads(_avail_file().read_text(encoding="utf-8"))
+        except Exception:
+            _avail_cache = {}
+    return _avail_cache
+
+
+def _avail_save() -> None:
+    try:
+        path = _avail_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_avail_get()), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def known_available(series: Series) -> bool | None:
+    """Önbellekteki karar (True/False) ya da bilinmiyorsa None. Ağ yok."""
+    if not hasattr(SITES.get(series.site), "has_source"):
+        return True
+    with _avail_lock:
+        hit = _avail_get().get(f"{series.site}|{series.slug}")
+    if hit and time.time() - hit[0] < _AVAIL_TTL[bool(hit[1])]:
+        return bool(hit[1])
+    return None
+
+
+def filter_available(contexts: dict[str, tuple[Network, SessionState]],
+                     results: list[Series],
+                     timeout: float = _AVAIL_DEADLINE) -> list[Series]:
+    """Kaynağı olmadığı KESİN olan yapımları çıkarır, sırayı korur."""
+    verdict: dict[int, bool] = {}
+    todo = []
+    for i, s in enumerate(results):
+        v = known_available(s)
+        if v is None and s.site in contexts:
+            todo.append((i, s))
+        elif v is not None:
+            verdict[i] = v
+    if todo:
+        def check(s):
+            # Her iş parçacığına kendi Network'ü: curl-cffi istemcisi
+            # eşzamanlı kullanılamaz.
+            _net, session = contexts[s.site]
+            return bool(SITES[s.site].has_source(Network(session), session, s))
+
+        ex = concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(todo)))
+        futs = {ex.submit(check, s): (i, s) for i, s in todo}
+        done, _ = concurrent.futures.wait(futs, timeout=timeout)
+        ex.shutdown(wait=False)
+        now = time.time()
+        with _avail_lock:
+            cache = _avail_get()
+            for fut in done:
+                i, s = futs[fut]
+                try:
+                    ok = fut.result()
+                except Exception:
+                    continue          # ağ hatası: karar yok, gösterilir
+                verdict[i] = ok
+                cache[f"{s.site}|{s.slug}"] = [now, ok]
+            _avail_save()
+    return [s for i, s in enumerate(results) if verdict.get(i, True)]

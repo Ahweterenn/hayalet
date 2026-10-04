@@ -35,7 +35,11 @@ const me = {
 const state = {
     isLeader: false, controlMode: 'all', people: [], now: {}, catalog: false,
     unreadChat: 0, suggestions: 0, lastSender: null, publicUrl: '',
+    queue: [], videoUrl: '',
 };
+
+// Sunucudaki izinli liste ile aynı (rooms.REACTIONS).
+const REACTIONS = ['😂', '😍', '😮', '😢', '🔥', '👏'];
 
 let socket = null, player = null, call = null, library = null;
 
@@ -101,6 +105,8 @@ function start() {
 
     player = new Player($('#stage'), { roomId, emit });
     player.onDoubleTap = toggleFullscreen;
+    // Yerel tam ekran bitti/başladı (geri tuşu da kapatabilir).
+    player.onNativeFs = on => onFsChange(on);
     call = new Call({ socket, roomId, me: () => me, dock: $('#call-dock'), onState: renderCallState });
     library = new Library({
         socket, roomId, root: $('#library'), isLeader: () => state.isLeader,
@@ -129,7 +135,9 @@ function bindSocket(emit) {
         state.catalog = !!s.catalog;
         library.setCatalog(state.catalog);
         setPeople(s.people || []);
+        setQueue(s.queue || []);
         setNow(s.now || {});
+        state.videoUrl = s.videoUrl || '';
         if (s.videoUrl) {
             player.load(s.videoUrl, s.subtitles || [], {
                 startTime: s.currentTime || 0, autoplay: s.isPlaying && !s.isBuffering,
@@ -153,12 +161,19 @@ function bindSocket(emit) {
     socket.on('user-joined', ({ username }) => addSystem(`<b>${esc(username)}</b> odaya katıldı.`, true));
     socket.on('user-left', ({ username }) => addSystem(`<b>${esc(username)}</b> ayrıldı.`, true));
 
-    socket.on('video-changed', ({ videoUrl, subtitles, now }) => {
+    socket.on('video-changed', ({ videoUrl, subtitles, now, startTime }) => {
         setNow(now || {});
+        state.videoUrl = videoUrl || '';
         if (!videoUrl) { player.clear(); return; }
-        player.load(videoUrl, subtitles || []);
+        // Birlikte izleme geçmişinden "kaldığınız yerden": herkes aynı yerden başlar.
+        player.load(videoUrl, subtitles || [], startTime > 0
+            ? { startTime, onReady: () => player.syncSeek(startTime) } : {});
         toast(now && now.title ? `Açıldı: ${now.title}` : 'Yeni içerik açıldı.', 'ok');
     });
+    socket.on('queue', ({ items }) => setQueue(items || []));
+    // İçerik aynı, yalnız bilgisi tazelendi (YouTube başlığı sonradan gelir).
+    socket.on('now', ({ now }) => setNow(now || {}));
+    socket.on('reaction', ({ emoji, username, color }) => flyReaction(emoji, username, color));
     socket.on('content-loading', ({ loading }) => { $('#stage').classList.toggle('opening', !!loading); library.setLoading(loading); });
 
     socket.on('play', ({ currentTime }) => player.remote('play', currentTime));
@@ -254,10 +269,80 @@ function applyControl() {
     syncNext();
 }
 
-/** Oynatıcıdaki "Sonraki bölüm": yalnız ev sahibine, sırada bölüm varsa. */
+/** Oynatıcıdaki "Sonraki": yalnız ev sahibine. İzleme sırası doluysa
+ *  sıradaki içerik, değilse dizinin sonraki bölümü. */
 function syncNext() {
+    const q = state.queue;
+    if (state.isLeader && q.length) {
+        // Ön çözüm yalnız sonraki bölüm için var; sıradaki içerik açılınca çözülür.
+        player.onPrefetch = null;
+        player.setNext(() => socket.emit('queue-play', { roomId }), {
+            kicker: 'SIRADAKİ', chip: 'Sıradaki',
+            title: [q[0].title, q[0].subtitle].filter(Boolean).join(' · '),
+        });
+        return;
+    }
     player.onPrefetch = () => socket.emit('prefetch-next', { roomId });
-    player.setNext(state.isLeader && state.now.hasNext ? () => socket.emit('next-episode', { roomId }) : null);
+    player.setNext(state.isLeader && state.now.hasNext ? () => socket.emit('next-episode', { roomId }) : null,
+        { kicker: 'SONRAKİ BÖLÜM', chip: 'Sonraki bölüm' });
+}
+
+function setQueue(items) {
+    state.queue = items;
+    library.setQueue(items);
+    syncNext();
+}
+
+// --- tepkiler ----------------------------------------------------------------------------
+let trayTimer = null;
+function closeTray() { clearTimeout(trayTimer); $('#react-tray').hidden = true; }
+/** Tepsi art arda birkaç tepki için açık kalır, bir süre dokunulmazsa kapanır. */
+function keepTray() { clearTimeout(trayTimer); trayTimer = setTimeout(closeTray, 5000); }
+
+function bindReactions() {
+    const tray = $('#react-tray');
+    tray.replaceChildren(...REACTIONS.map(e => h('button', {
+        type: 'button', 'aria-label': e,
+        onclick: ev => { ev.stopPropagation(); socket.emit('reaction', { roomId, emoji: e }); keepTray(); }
+    }, e)));
+    $('[data-act=react]').addEventListener('click', e => {
+        e.stopPropagation();
+        if (tray.hidden) { tray.hidden = false; keepTray(); } else closeTray();
+    });
+    document.addEventListener('pointerdown', e => {
+        if (!tray.hidden && !e.target.closest('#react-tray, [data-act=react]')) closeTray();
+    });
+}
+
+function flyReaction(emoji, name, color) {
+    if (!REACTIONS.includes(emoji)) return;
+    const box = $('#reactions');
+    while (box.children.length > 24) box.firstChild.remove();
+    const el = h('div', { class: 'react-fly', style: { right: `${6 + Math.random() * 50}%` } },
+        h('span', { class: 'e' }, emoji),
+        h('span', { class: 'n', style: { background: color || colorFor(name) } }, name));
+    el.style.setProperty('--dx1', `${Math.round(Math.random() * 30 - 15)}px`);
+    el.style.setProperty('--dx2', `${Math.round(Math.random() * 60 - 30)}px`);
+    box.append(el);
+    setTimeout(() => el.remove(), 3300);
+}
+
+// --- birlikte izleme geçmişi (yalnız uygulamada) -------------------------------------------
+// Başkasıyla birlikte oynarken 15 sn'de bir uygulamaya "ne, kimle, nerede"
+// bildirilir; uygulama bunu "Birlikte izlediklerin" rafında gösterir ve
+// oradan odayı aynı yerden yeniden açar. Tek başına izlenen kaydedilmez.
+function historyTick() {
+    if (!app || !app.saveHistory || !player || !player.hasMedia() || !player.playing()) return;
+    const others = state.people.filter(p => p.id !== socket.id).map(p => p.name);
+    if (!others.length) return;
+    const n = state.now || {};
+    const entry = {
+        title: n.title || '', subtitle: n.subtitle || '', poster: n.poster || '', kind: n.kind || '',
+        key: n.key || null, url: n.kind === 'hayalet' ? '' : state.videoUrl,
+        pos: Math.floor(player.time()), dur: Math.floor(player.duration()), with: others,
+    };
+    if (!entry.key && !entry.url) return;
+    try { app.saveHistory(JSON.stringify(entry)); } catch (_) { }
 }
 
 function setNow(now) {
@@ -477,6 +562,12 @@ function fsElement() { return document.fullscreenElement || document.webkitFulls
 
 function toggleFullscreen() {
     const root = $('#app');
+    // Uygulamada yerel oynatıcıyla: HTML5 tam ekranı WebView'i gizleyip
+    // arkadaki videoyu örterdi; pencereyi uygulama tam ekrana alır, düzen CSS.
+    if (player && player.native && app && app.nvFullscreen) {
+        app.nvFullscreen(!root.classList.contains('is-fs'));
+        return;
+    }
     if (fsElement()) {
         (document.exitFullscreen || document.webkitExitFullscreen).call(document);
         return;
@@ -488,8 +579,8 @@ function toggleFullscreen() {
     }).catch(() => toast('Tam ekrana geçilemedi.'));
 }
 
-function onFsChange() {
-    const on = !!fsElement();
+function onFsChange(native) {
+    const on = typeof native === 'boolean' ? native : !!fsElement();
     $('#app').classList.toggle('is-fs', on);
     if (!on) { $('#app').classList.remove('drawer-open'); if (screen.orientation && screen.orientation.unlock) try { screen.orientation.unlock(); } catch (_) { } }
     $('[data-act=fs]').replaceChildren(icon(on ? 'fs-exit' : 'fs'));
@@ -540,6 +631,8 @@ function bindUi(emit) {
     // Sayfa arka plana düşünce (uygulama küçültüldü) kalp atışı sürer; geri
     // gelince sohbet sayacını sıfırlamak için görünürlüğü izle.
     document.addEventListener('visibilitychange', () => { if (!document.hidden && chatVisible()) { state.unreadChat = 0; renderBadges(); } });
+    bindReactions();
+    setInterval(historyTick, 15000);
     renderCallState();
     applyControl();
 }

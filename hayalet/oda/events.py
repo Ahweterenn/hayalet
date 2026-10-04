@@ -31,6 +31,32 @@ def _youtube_title(url: str) -> str | None:
     return None
 
 
+_yt_meta_cache: dict[str, tuple[str, str]] = {}
+
+
+def _youtube_meta(url: str) -> tuple[str, str]:
+    """YouTube videosunun başlığı ve küçük resmi (oEmbed, anahtarsız).
+    Sıra, öneri ve birlikte izleme geçmişinde "YouTube" yerine gerçek ad
+    görünsün diye. Alınamazsa ("", "") — içerik yine açılır."""
+    if not _youtube_title(url):
+        return "", ""
+    if url in _yt_meta_cache:
+        return _yt_meta_cache[url]
+    meta = ("", "")
+    try:
+        from curl_cffi import requests as cr
+        r = cr.get("https://www.youtube.com/oembed",
+                   params={"url": url, "format": "json"}, timeout=4,
+                   impersonate="chrome")
+        if r.status_code == 200:
+            d = r.json()
+            meta = (str(d.get("title") or "")[:120], str(d.get("thumbnail_url") or ""))
+    except Exception:
+        pass
+    _yt_meta_cache[url] = meta
+    return meta
+
+
 def _esc(s) -> str:
     return html.escape(str(s or ""), quote=True)
 
@@ -92,21 +118,71 @@ def register(sio, store: R.RoomStore, host_token: str,
         else:
             threading.Thread(target=fn, args=args, daemon=True).start()
 
-    def put_video(room, url, subtitles, now, headers=None):
-        """Odaya yeni içerik koyar ve herkese duyurur."""
+    def put_video(room, url, subtitles, now, headers=None, start=0.0):
+        """Odaya yeni içerik koyar ve herkese duyurur. `start`: birlikte izleme
+        geçmişinden "kaldığınız yerden devam" (saniye)."""
         if headers is not None:
             room.headers = {str(k).lower(): v for k, v in headers.items()}
         room.video_url = url
         room.subtitles = R.normalize_subtitles(subtitles or [])
-        room.current_time = 0.0
+        room.current_time = max(0.0, float(start or 0))
         room.is_playing = False
         room.now = dict(now or {})
         sio.emit("video-changed",
                  {"videoUrl": room.video_url,
                   "subtitles": [s.as_dict() for s in room.subtitles],
-                  "now": room.now}, room=room.id)
+                  "now": room.now, "startTime": room.current_time}, room=room.id)
+        if room.now.get("kind") == "youtube":
+            meta_to_now(room, url, keep_title=room.now.get("title") not in ("", "YouTube"))
 
-    def play_ref(room, ref, sid=None):
+    def emit_queue(room):
+        sio.emit("queue", {"items": room.queue}, room=room.id)
+
+    def link_now(url, title=""):
+        yt = _youtube_title(url)
+        return {"kind": "youtube" if yt else "link", "title": title or yt or "Bağlantı",
+                "subtitle": "", "poster": "", "hasNext": False}
+
+    def later_meta(url, apply):
+        """YouTube başlığı/küçük resmi arka planda: içerik beklemeden açılır,
+        ad gelince `apply(başlık, resim)` yerine koyar ve duyurur."""
+        if not _youtube_title(url):
+            return
+
+        def work():
+            title, thumb = _youtube_meta(url)
+            if title or thumb:
+                apply(title, thumb)
+        background(work)
+
+    def meta_to_now(room, url, keep_title):
+        def apply(title, thumb):
+            if room.video_url != url or room.now.get("kind") != "youtube":
+                return      # bu arada başka içerik açıldı
+            if title and not keep_title:
+                room.now.update(title=title, subtitle="YouTube")
+            if thumb:
+                room.now["poster"] = thumb
+            sio.emit("now", {"now": room.now}, room=room.id)
+        later_meta(url, apply)
+
+    def meta_to_item(item, emit_fn, keep_title):
+        def apply(title, thumb):
+            if title and not keep_title:
+                item.update(title=title, subtitle="YouTube")
+            if thumb:
+                item["poster"] = thumb
+            emit_fn()
+        later_meta(item.get("url", ""), apply)
+
+    def play_item(room, item, sid=None):
+        """Sıradan ya da öneriden gelen içeriği açar."""
+        if item.get("kind") == "hayalet" and item.get("ref") and catalog is not None:
+            background(play_ref, room, item["ref"], sid)
+        elif item.get("url"):
+            put_video(room, item["url"], [], link_now(item["url"], item.get("title", "")))
+
+    def play_ref(room, ref, sid=None, start=0.0):
         """Katalog ref'ini çözüp odaya koyar (arka planda çalışır)."""
         sio.emit("content-loading", {"loading": True}, room=room.id)
         try:
@@ -125,7 +201,8 @@ def register(sio, store: R.RoomStore, host_token: str,
             except Exception:
                 pass
         put_video(room, r.url, r.subtitles, r.now,
-                  headers={"referer": r.referer, "user-agent": r.user_agent})
+                  headers={"referer": r.referer, "user-agent": r.user_agent},
+                  start=start)
         sio.emit("content-loading", {"loading": False}, room=room.id)
 
     # --- katılma ---------------------------------------------------------
@@ -192,6 +269,7 @@ def register(sio, store: R.RoomStore, host_token: str,
                 if room.add_suggestion(u, item):
                     emit_suggestions(room)
                     to_sid(sid, "suggestion-sent", {"title": item["title"]})
+                    meta_to_item(item, lambda: emit_suggestions(room), keep_title=bool(title))
             return
 
         if data.get("headers"):
@@ -205,11 +283,7 @@ def register(sio, store: R.RoomStore, host_token: str,
                 and R.subtitles_equal(room.subtitles, subs)):
             return
 
-        yt = _youtube_title(video_url)
-        put_video(room, video_url, data.get("subtitles"),
-                  {"kind": "youtube" if yt else "link",
-                   "title": title or yt or "Bağlantı", "subtitle": "",
-                   "poster": "", "hasNext": False})
+        put_video(room, video_url, data.get("subtitles"), link_now(video_url, title))
 
     # --- oynatma denetimi -------------------------------------------------
     def _playback(event, playing):
@@ -312,6 +386,78 @@ def register(sio, store: R.RoomStore, host_token: str,
                    "time": time.strftime("%H:%M")}
         room.add_chat(payload)
         sio.emit("chat-message", payload, room=room.id)
+
+    # --- tepkiler ------------------------------------------------------------
+    @sio.on("reaction")
+    def reaction(sid, data):
+        """Videonun üstünde uçan emoji. Geçmişe yazılmaz; sonradan katılan görmez."""
+        room = room_of(data)
+        if not room:
+            return
+        u = room.find_user(sid)
+        emoji = str((data or {}).get("emoji") or "")
+        if not u or not room.allow_reaction(sid, emoji):
+            return
+        sio.emit("reaction", {"id": sid, "emoji": emoji,
+                              "username": u.username, "color": u.color}, room=room.id)
+
+    # --- izleme sırası ---------------------------------------------------------
+    # Sırayı herkes görür, yalnız ev sahibi değiştirir. Misafir sıraya ekletmek
+    # için öneri gönderir; ev sahibi öneriyi "Sıraya ekle" ile alır.
+    def _queue_item(data) -> dict | None:
+        d = data or {}
+        title = str(d.get("title") or "").strip()[:120]
+        if d.get("ref") and catalog is not None:
+            return {"kind": "hayalet", "ref": str(d["ref"]), "title": title,
+                    "subtitle": str(d.get("subtitle") or "")[:80],
+                    "poster": str(d.get("poster") or "")}
+        url = str(d.get("url") or "").strip()
+        if url.startswith(("http://", "https://")):
+            return {"kind": "link", "url": url,
+                    "title": title or _youtube_title(url) or url[:80]}
+        return None
+
+    @sio.on("queue-add")
+    def queue_add(sid, data):
+        room = room_of(data)
+        if not room or not room.is_leader(sid):
+            return
+        item = _queue_item(data)
+        u = room.find_user(sid)
+        q = room.queue_add(u.username if u else "", item) if item else None
+        if q:
+            emit_queue(room)
+            to_sid(sid, "queue-added", {"title": q["title"]})
+            if q.get("url"):
+                meta_to_item(q, lambda: emit_queue(room),
+                             keep_title=bool(str((data or {}).get("title") or "").strip()))
+
+    @sio.on("queue-remove")
+    def queue_remove(sid, data):
+        room = room_of(data)
+        if room and room.is_leader(sid) and room.queue_take(str((data or {}).get("id", ""))):
+            emit_queue(room)
+
+    @sio.on("queue-move")
+    def queue_move(sid, data):
+        room = room_of(data)
+        d = data or {}
+        if room and room.is_leader(sid) and isinstance(d.get("delta"), int) \
+                and room.queue_move(str(d.get("id", "")), d["delta"]):
+            emit_queue(room)
+
+    @sio.on("queue-play")
+    def queue_play(sid, data):
+        """Sıradan birini hemen aç; `id` yoksa baştakini (bölüm/video bitince)."""
+        room = room_of(data)
+        if not room or not room.is_leader(sid):
+            return
+        qid = (data or {}).get("id")
+        item = room.queue_take(str(qid) if qid else None)
+        if not item:
+            return
+        emit_queue(room)
+        play_item(room, item, sid)
 
     # --- oda ayarları --------------------------------------------------------
     @sio.on("room-settings")
@@ -428,14 +574,13 @@ def register(sio, store: R.RoomStore, host_token: str,
         if not s:
             return
         item = s["item"]
+        if (data or {}).get("toQueue"):
+            if room.queue_add(s["by"], item):
+                emit_queue(room)
+                sys_msg(room.id, f"📋 <b>{_esc(s['by'])}</b> önerisi sıraya eklendi: {_esc(item.get('title', ''))}")
+            return
         sys_msg(room.id, f"✅ <b>{_esc(s['by'])}</b> önerisi açılıyor: {_esc(item.get('title', ''))}")
-        if item.get("kind") == "hayalet" and catalog is not None:
-            background(play_ref, room, item["ref"], sid)
-        elif item.get("url"):
-            yt = _youtube_title(item["url"])
-            put_video(room, item["url"], [],
-                      {"kind": "youtube" if yt else "link", "title": item.get("title", ""),
-                       "subtitle": "", "poster": "", "hasNext": False})
+        play_item(room, item, sid)
 
     @sio.on("suggestion-dismiss")
     def suggestion_dismiss(sid, data):
@@ -546,10 +691,16 @@ def register(sio, store: R.RoomStore, host_token: str,
         emit_leader_state(room)
         emit_suggestions(room)
 
-    def app_play(room_id, ref):
+    def app_play(room_id, ref, start=0.0):
         """Uygulamanın kendi gönderdiği bölüm (katalog ref'i)."""
         room = store.get(room_id)
         if room is not None and catalog is not None:
-            background(play_ref, room, ref, None)
+            background(play_ref, room, ref, None, start)
 
-    return {"play": app_play}
+    def app_play_link(room_id, url, title="", start=0.0):
+        """Uygulamadan bağlantı (birlikte izleme geçmişinden YouTube/link)."""
+        room = store.get(room_id)
+        if room is not None and str(url).startswith(("http://", "https://")):
+            put_video(room, url, [], link_now(url, title), start=start)
+
+    return {"play": app_play, "play_link": app_play_link}

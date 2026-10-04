@@ -62,7 +62,7 @@ def build_subs_playlist(vtt_local_url: str) -> str:
 def build_master_playlist(video_variants, audios, subtitle=None) -> str:
     """Birden çok kaynaktan sentetik HLS master (tüm URL'ler proxy'lenmiş olmalı).
 
-    video_variants: [(local_url, bandwidth, height)]  (en az bir tane)
+    video_variants: [(local_url, bandwidth, height[, codecs])]  (en az bir tane)
     audios:         [(local_url, name, lang, is_default)]  (0+; boşsa ses videoda gömülü)
     subtitle:       (local_subs_playlist_url, name, lang) | None
     """
@@ -85,10 +85,17 @@ def build_master_playlist(video_variants, audios, subtitle=None) -> str:
             f'DEFAULT=NO,AUTOSELECT=YES,FORCED=NO,URI="{surl}"'
         )
 
-    for url, bw, height in video_variants:
+    for url, bw, height, *rest in video_variants:
         attrs = f"BANDWIDTH={bw or 3000000}"
         if height:
             attrs += f",RESOLUTION={int(height*16/9)}x{height}"
+        # CODECS olmadan ExoPlayer varyantın içinde ses olup olmadığını
+        # bilemiyor: hdfilmcehennemi varyantları Türkçe sesi gömülü taşıyor
+        # (ffprobe: h264+aac), ayrıca Türkçe/English ayrı kanallar var. Kaynakta
+        # ne yazıyorsa aynen veriyoruz; ses grubu URI'li olduğundan standart
+        # gereği ayrı kanallar çalınır, gömülü ses değil.
+        if rest and rest[0]:
+            attrs += f',CODECS="{rest[0]}"'
         for g in (aud_grp, sub_grp):
             if g:
                 attrs += "," + g
@@ -983,15 +990,10 @@ class HLSProxy:
                         for chunk in r.iter_content(chunk_size=65536):
                             if chunk:
                                 buf += chunk
-                        data = bytes(buf)
+                        # bytes(buf) her segmentin TAM bir kopyasını daha çıkarıyordu
+                        # (izlerken saniyede birkaç MB boşa kopya); wfile bytearray alır.
+                        data = buf
                         ctype = r.headers.get("content-type") or "video/mp2t"
-                        # Bazı sağlayıcılar TS segmentlerini .jpg gibi gösterir.
-                        # Media3 gerçek gövdeyi görse bile bu MIME tipiyle segmenti
-                        # resim olarak sınıflandırıp oynatmayı reddedebilir.
-                        if ctype.split(";", 1)[0].strip().lower() in {
-                                "image/jpeg", "image/jpg", "image/png",
-                                "application/octet-stream"}:
-                            ctype = "video/mp2t"
                         # Bazı sağlayıcılar TS segmentlerini .jpg gibi gösterir.
                         # Media3 gerçek gövdeyi görse bile bu MIME tipiyle segmenti
                         # resim olarak sınıflandırıp oynatmayı reddedebilir.

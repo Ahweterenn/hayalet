@@ -46,6 +46,13 @@ _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _MAX_SUGGESTIONS = 20
 # Sonradan katılan son mesajları görsün (sohbet boş açılıyordu).
 _MAX_CHAT_HISTORY = 50
+# İzleme sırası sınırı.
+_MAX_QUEUE = 30
+# Tepkiler: yalnız bu emojiler (istemci serbest metin gönderemesin) ve kişi
+# başına kısa pencerede sınırlı sayıda (ekran uçan emojiyle dolmasın).
+REACTIONS = ("😂", "😍", "😮", "😢", "🔥", "👏")
+_REACT_WINDOW = 3.0
+_REACT_MAX = 6
 
 
 def clean_color(value) -> str:
@@ -82,6 +89,10 @@ class Room:
     now: dict = field(default_factory=dict)
     suggestions: list = field(default_factory=list)
     chat: list = field(default_factory=list)
+    # Sıradakiler: {"id", "kind", "ref"|"url", "title", "subtitle", "poster", "by"}.
+    queue: list = field(default_factory=list)
+    # Tepki sınırı için kişi başına son tepki zamanları (sid -> [zaman]).
+    _reacts: dict = field(default_factory=dict)
 
     # --- kullanıcılar ----------------------------------------------------
     def add_user(self, sid: str, username: str, ip: str,
@@ -145,10 +156,59 @@ class Room:
             self.suggestions = [x for x in self.suggestions if x["id"] != sid]
         return s
 
+    # --- izleme sırası ----------------------------------------------------
+    def queue_add(self, by: str, item: dict) -> dict | None:
+        """Sıranın sonuna ekler (`by`: ekleyenin ya da önerenin adı). Aynı
+        içerik zaten sıradaysa eklenmez."""
+        key = item.get("ref") or item.get("url")
+        if not key or len(self.queue) >= _MAX_QUEUE:
+            return None
+        if any((q.get("ref") or q.get("url")) == key for q in self.queue):
+            return None
+        q = {"id": secrets.token_urlsafe(6), "by": str(by or ""),
+             **{k: item[k] for k in ("kind", "ref", "url", "title", "subtitle", "poster")
+                if item.get(k)}}
+        self.queue.append(q)
+        return q
+
+    def queue_take(self, qid: str | None = None) -> dict | None:
+        """Sıradan çıkarıp döndürür; qid yoksa baştakini."""
+        if not self.queue:
+            return None
+        q = self.queue[0] if qid is None else next(
+            (x for x in self.queue if x["id"] == qid), None)
+        if q:
+            self.queue = [x for x in self.queue if x["id"] != q["id"]]
+        return q
+
+    def queue_move(self, qid: str, delta: int) -> bool:
+        i = next((n for n, x in enumerate(self.queue) if x["id"] == qid), None)
+        if i is None:
+            return False
+        j = max(0, min(len(self.queue) - 1, i + int(delta)))
+        if i == j:
+            return False
+        self.queue.insert(j, self.queue.pop(i))
+        return True
+
+    # --- tepkiler ---------------------------------------------------------
+    def allow_reaction(self, sid: str, emoji: str, now: float | None = None) -> bool:
+        if emoji not in REACTIONS:
+            return False
+        now = time.time() if now is None else now
+        recent = [t for t in self._reacts.get(sid, []) if now - t < _REACT_WINDOW]
+        if len(recent) >= _REACT_MAX:
+            self._reacts[sid] = recent
+            return False
+        recent.append(now)
+        self._reacts[sid] = recent
+        return True
+
     def remove_user(self, sid: str) -> User | None:
         gone = next((u for u in self.users if u.sid == sid), None)
         self.users = [u for u in self.users if u.sid != sid]
         self.buffering = [s for s in self.buffering if s != sid]
+        self._reacts.pop(sid, None)
         return gone
 
     def find_user(self, sid: str) -> User | None:
@@ -206,6 +266,7 @@ class Room:
             "controlMode": self.control_mode,
             "now": dict(self.now),
             "chat": list(self.chat),
+            "queue": list(self.queue),
         }
 
 

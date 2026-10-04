@@ -53,7 +53,11 @@
     <symbol id="i-expand" viewBox="0 0 24 24"><path d="M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"/></symbol>
     <symbol id="i-leave" viewBox="0 0 24 24"><path d="M9.5 4.5h-4a1.5 1.5 0 0 0-1.5 1.5v12a1.5 1.5 0 0 0 1.5 1.5h4M15 8l4 4-4 4M19 12H9"/></symbol>
     <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M14.5 4.5v15"/></symbol>
-    <symbol id="i-ghost" viewBox="0 0 24 24"><path d="M5 20.5V11a7 7 0 0 1 14 0v9.5l-2.3-1.7-2.4 1.7-2.3-1.7-2.3 1.7-2.4-1.7z" fill="currentColor" stroke="none"/><circle cx="9.5" cy="11" r="1.4" fill="var(--bg)"/><circle cx="14.5" cy="11" r="1.4" fill="var(--bg)"/></symbol>
+    <symbol id="i-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M8.3 14a4.3 4.3 0 0 0 7.4 0"/><circle cx="9.2" cy="9.8" r="1.1" fill="currentColor" stroke="none"/><circle cx="14.8" cy="9.8" r="1.1" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-queue" viewBox="0 0 24 24"><path d="M4 6.5h11M4 11.5h11M4 16.5h7"/><path d="M16 14.5l5 3-5 3z" fill="currentColor"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-up" viewBox="0 0 24 24"><path d="M6.5 14.5L12 9l5.5 5.5"/></symbol>
+    <symbol id="i-ghost"viewBox="0 0 24 24"><path d="M5 20.5V11a7 7 0 0 1 14 0v9.5l-2.3-1.7-2.4 1.7-2.3-1.7-2.3 1.7-2.4-1.7z" fill="currentColor" stroke="none"/><circle cx="9.5" cy="11" r="1.4" fill="var(--bg)"/><circle cx="14.5" cy="11" r="1.4" fill="var(--bg)"/></symbol>
   </defs>
 </svg>
 
@@ -109,6 +113,7 @@
         <div class="controls">
           <div class="p-top">
             <div class="p-titles"><div class="p-title" id="p-title"></div><div class="p-sub" id="p-sub"></div></div>
+            <button class="c-btn" data-act="react" aria-label="Tepki gönder"><svg class="icon"><use href="#i-smile"/></svg></button>
             <button class="c-btn" data-act="side" aria-label="Sohbet"><svg class="icon"><use href="#i-chat"/></svg><span class="dot" id="side-dot" hidden></span></button>
             <button class="c-btn" data-act="pip" aria-label="Mini ekran" hidden><svg class="icon"><use href="#i-pip"/></svg></button>
             <button class="c-btn" data-act="lock" aria-label="Ekranı kilitle"><svg class="icon"><use href="#i-lock"/></svg></button>
@@ -152,6 +157,10 @@
       </div>
 
       <div class="float-chat" id="float-chat" aria-hidden="true"></div>
+      <!-- Tepkiler: uçan emojiler ve seçim tepsisi. .screen'in DIŞINDA: oradaki
+           dokunma hareketleri (sarma, çift dokunuş) tepsiye dokunuşu yutardı. -->
+      <div class="reactions" id="reactions" aria-hidden="true"></div>
+      <div class="react-tray" id="react-tray" role="toolbar" aria-label="Tepkiler" hidden></div>
 
       <div class="call-dock" id="call-dock" hidden>
         <video class="call-remote" playsinline autoplay></video>

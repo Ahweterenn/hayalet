@@ -143,7 +143,14 @@ class Catalog:
                  "title": series.name,
                  "subtitle": "" if movie else _episode_label(ep, False, full=True),
                  "poster": series.poster_url or "",
-                 "hasNext": self._next(series, ep) is not None})
+                 "hasNext": self._next(series, ep) is not None,
+                 # Kalıcı kimlik (ref yalnız bu oturumda geçerli): uygulama
+                 # birlikte izleme geçmişine bunu yazar, sonra arama yapmadan
+                 # yeniden açar (hayalet_app.episodes_key ile aynı alanlar).
+                 "key": {"site": series.site, "slug": series.slug,
+                         "type": series.type, "name": series.name,
+                         "poster": series.poster_url or "",
+                         "season": ep.season, "number": ep.number}})
 
     def prefetch_next(self, episode_ref: str) -> None:
         """Sıradaki bölümün akışını arka planda çözer; resolve() hazır

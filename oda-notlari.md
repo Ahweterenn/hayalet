@@ -138,3 +138,59 @@ sunucudaki kayıttan gelir; istemcinin bildirdiği ada güvenilmez.
   Linux'u da sayar.
 - uiautomator dokunuşları ekran yenilenirken kaybolabiliyor: "düğme
   çalışmıyor" demeden önce logcat'e bak.
+- `adb shell input text ... ; keyevent ENTER` arama kutusu odakta değilken
+  gönderilirse ENTER odaklı "Birlikte izle" düğmesine basar. Önce
+  uiautomator'la EditText'in `focused="true"` olduğunu doğrula.
+- Aynı anda iki `oda_start` (yapışkan OdaService yeniden başlarken kullanıcı
+  da odaya girince) iki sunucu kurmaya çalışıyordu; werkzeug dolu portta
+  `SystemExit` atıyor ve `except Exception` onu yakalamıyor → uygulama çöktü.
+  Artık kilitli (hayalet_app.oda_start).
+- Android 15 `dataSync` ön plan servisine 6 saat sınırı koyuyor: gün boyu açık
+  kalan oda gece `ForegroundServiceDidNotStopInTimeException` ile çöktü
+  (dropbox'ta görüldü, 2026-09-27 00:00). HENÜZ DÜZELTİLMEDİ (`onTimeout`).
+
+**Sıra, tepkiler, birlikte izleme geçmişi (2026-09-27)**
+- Sıra (`Room.queue`) herkese yayınlanır, yalnız ev sahibi değiştirir;
+  misafir öneri gönderir, ev sahibi öneriyi "+" ile sıraya alır. Bitince
+  oynatıcının "Sonraki" kartı sıradakini açar (sıra boşsa sonraki bölüm).
+- Tepki yalnız `rooms.REACTIONS` listesinden, kişi başına 3 sn'de en çok 6.
+- Uzun bölünemeyen başlık (bağlantı adresi) sayfa ızgarasının `auto` sütununu
+  genişletip dar ekranda sayfayı yana taşırıyordu: sütunlar `minmax(0, 1fr)`.
+- Geçmiş: sayfa başkasıyla birlikte OYNARKEN 15 sn'de bir `HayaletApp.saveHistory`
+  çağırır; katalog içeriğinde `now.key` (site/slug/sezon/bölüm) kalıcıdır,
+  ref değil. Uygulama odayı `oda_resume` ile aynı saniyeden açar.
+- YouTube başlığı/küçük resmi oEmbed'den ARKA PLANDA gelir (`now` olayı);
+  içerik beklemeden açılır.
+- PC'den başsız Chrome misafir bazı kaynakları oynatamayınca kumanda
+  "herkes"teyken odayı durdurabiliyor; ölçümde kumandayı ev sahibine al.
+
+**Pil (2026-09-27, tablette ölçüldü)**
+- Boş oda işlemci yemiyor (%0,5). Asıl gider kilitlerdi: `hayalet:oda`
+  PARTIAL_WAKE_LOCK + Wi-Fi HIGH_PERF oda açık olduğu sürece (boşken de)
+  tutuluyordu; bildirim 5 sn'de bir yeniden gönderiliyordu. Artık kilitler
+  yalnız misafir varken (+ açılışta 10 dk, son misafirden sonra 5 dk),
+  bildirim yalnız değişince; 30 dk kimse yoksa oda kapanır; Android 15'in
+  6 saat `dataSync` sınırında `onTimeout` odayı kapatır (çökmez).
+- Odada izlemek WebView'de ~1,4 çekirdek (RenderThread + ana thread + Mali
+  GPU; hls.js/Python değil). Katmanları kapatmak, 720p'ye inmek, tam ekran:
+  fark yok. Uygulamanın içinde video artık ExoPlayer'da, WebView'in ARKASINDA
+  (OdaVideo.java + player.js NativeVideo): ~0,9 çekirdek (uygulamanın kendi
+  oynatıcısı ~0,8). Sayfa saydam: html/body/.app/.main zeminsiz.
+- Ölçüm yöntemi: `/proc/PID/stat` utime+stime farkı (uygulama, WebView
+  sandboxed süreci, cloudflared); thread adı `/proc/PID/task/TID/comm`.
+- Yerel oynatıcı konumu sayfa bildirir (`nvRect`); oynatıcı sonradan oluşunca
+  son konum uygulanmalı, yoksa 1x1 kalıyordu. HTML5 tam ekranı WebView'i
+  gizleyip videoyu örter: uygulamada tam ekran `nvFullscreen` ile.
+- Senkron hatası (eski): bekleme bitince son bekleyen komut "sar" ise
+  oynatma devam etmiyordu; lider durunca kalp atışı herkesi durduruyordu.
+
+**TV'ye yansıtma (hayalet/core/cast_gateway.py)**
+- Oynatıcının HLS proxy'si açık bir aracı (her adresi getirir): yerel ağa
+  açılmaz. Kapı ayrı portta, gizli anahtarlı yol + yalnız proxy'nin portu.
+- Chrome "Private Network Access": güvenli olmayan genel sayfa yerel ağ
+  adresine HİÇ istek atamıyor (ölçüldü). TV denemesi yerel ağdaki bir
+  sayfadan yapılmalı. Kapı `Access-Control-Allow-Private-Network: true` da
+  döner (güvenli bağlamdaki alıcı için); gerçek Chromecast'te denenmedi.
+- Tabletten yayın ~0,6–0,9 MB/s (tabletin CDN hızı ~1 MB/s); kaynağın ilk
+  parçası 33 MB olabiliyor, hls.js'in 20 sn sınırında düşer. Yansıtma
+  telefondaki konumdan başladığı için ilk parçaya gerek kalmıyor.

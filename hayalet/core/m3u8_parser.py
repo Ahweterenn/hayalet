@@ -15,6 +15,9 @@ class Variant:
     url: str
     height: int          # 1080, 720 ... (0 = bilinmiyor)
     bandwidth: int
+    # Kaynağın CODECS özniteliği ("avc1...,mp4a..."): sentetik master'a aynen
+    # taşınır — oynatıcı varyantta gömülü ses olduğunu buradan anlıyor.
+    codecs: str = ""
 
     @property
     def label(self) -> str:
@@ -44,7 +47,8 @@ def list_variants(net: Network, session: SessionState, m3u8_url: str,
         height = res[1] if res else 0
         uri = p.uri if p.uri.startswith("http") else urljoin(m3u8_url, p.uri)
         variants.append(Variant(url=uri, height=height,
-                                bandwidth=si.bandwidth or 0 if si else 0))
+                                bandwidth=si.bandwidth or 0 if si else 0,
+                                codecs=(si.codecs or "") if si else ""))
     variants.sort(key=lambda v: (v.height, v.bandwidth), reverse=True)
     usable = [v for v in variants if v.height >= 240 or not v.height]
     return usable or variants[:1]

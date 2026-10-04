@@ -50,3 +50,24 @@ betiğinde gömülü sabit değer.
 1. Kanal D, Show TV, ATV (düz sayfa kazıma)
 2. Ortak DYG katmanı → Star TV, TLC, DMAX
 3. NOW (ağ trafiği), TRT 1 (YouTube gömülü)
+
+## Canlı yayın — iptv-org listesi (2026-10-04)
+
+`https://iptv-org.github.io/iptv/countries/tr.m3u` (açık kaynak iptv-org/iptv,
+yalnız herkese açık yayınlar). Ölçüm: 175 kayıt, 126'sı çalışıyor (200 + #EXTM3U).
+Büyük kanalların çoğu kanalın KENDİ CDN'inden: TRT 1/Haber (`*.medya.trt.com.tr`),
+Kanal D/TV8 (`*.daioncdn.net`, Demirören), Star/NTV (`dogus.daioncdn.net`),
+ATV/A Haber/NOW (`*.turknet.ercdn.net`). Çalışmayanlar: Beyaz TV, Kanal 7
+(sertifika), TRT Spor (üçüncü taraf host), ATV Avrupa (onrender.com — yeniden
+yayın). Üçüncü taraf hostlar (onrender, siteyaptim, radyotvonline) elenmeli.
+Show TV listede yok.
+
+### Free-TV/IPTV karşılaştırması (2026-10-04)
+`https://raw.githubusercontent.com/Free-TV/IPTV/master/playlists/playlist_turkey.m3u8`:
+16 kayıt, 16'sı çalışıyor, hepsi TRT'nin kendi sunucusu (`tv-*.medya.trt.com.tr`).
+Özel kanal yok. iptv-org'da OLMAYAN: TRT Spor, TRT Spor 2, TRT Belgesel, TRT World,
+TRT Arabi. Ⓖ = yalnız Türkiye IP'si. Karar önerisi: iki listeyi birleştir,
+aynı adres tek kayıt, kanalın kendi sunucusu olmayan hostları ele.
+FAST (Pluto/Samsung TV Plus/Plex) listeleri: matthuisman'ın listeleri DMCA ile
+kapandı; kendi barındırılan kazıyıcılar (FastChannels) var ama Türkiye'de
+bu servislerin kanalları ölçülmedi — kararsız kaynak.

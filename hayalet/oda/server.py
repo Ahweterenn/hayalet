@@ -213,10 +213,15 @@ class OdaServer:
                                   ("Cache-Control", "max-age=86400")])
         return [body]
 
-    def play(self, ref: str) -> None:
+    def play(self, ref: str, start: float = 0.0) -> None:
         """Katalog ref'ini odaya koyar (arka planda çözülür, odada
-        "Hazırlanıyor…" görünür; hata ev sahibinin ekranına düşer)."""
-        self._ops["play"](self.room_id, ref)
+        "Hazırlanıyor…" görünür; hata ev sahibinin ekranına düşer).
+        `start`: birlikte izleme geçmişinden devam (saniye)."""
+        self._ops["play"](self.room_id, ref, start)
+
+    def play_link(self, url: str, title: str = "", start: float = 0.0) -> None:
+        """YouTube/HLS/MP4 bağlantısını odaya koyar."""
+        self._ops["play_link"](self.room_id, url, title, start)
 
     def apply_identity(self, resolved) -> None:
         """Çözülen akışın kimliğini proxy'ye taşır: CDN aynı UA/çerezi istiyor."""

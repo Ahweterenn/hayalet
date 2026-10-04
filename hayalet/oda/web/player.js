@@ -41,6 +41,119 @@ const clock = sec => {
     return hh ? `${hh}:${pad2(mm)}:${pad2(ss)}` : `${pad2(mm)}:${pad2(ss)}`;
 };
 
+/**
+ * Uygulamanın içinde <video> yerine yerel oynatıcı (Android OdaVideo, ExoPlayer).
+ *
+ * Neden: WebView sayfa içindeki videoyu her karede uygulamanın çizim hattından
+ * geçiriyor; tablette ölçüldü (2026-09-27): odada ~1,4 çekirdek, uygulamanın
+ * kendi oynatıcısında ~0,8. Yerel oynatıcı WebView'in ARKASINDA; sahne saydam.
+ *
+ * Player'ın kullandığı HTMLMediaElement parçasını taklit eder: özellikler
+ * (currentTime, paused, duration, buffered...), play/pause ve aynı olaylar.
+ * Böylece senkron mantığı (isSyncing, kayma düzeltmesi, bekleme) değişmeden
+ * çalışır. Yerel taraf durumu 4 Hz'de `window.__hn` ile bildirir; aradaki
+ * currentTime oynatma hızıyla tahmin edilir.
+ */
+class NativeVideo extends EventTarget {
+    constructor(app, player) {
+        super();
+        this.app = app;
+        this.player = player;
+        this._t = 0; this._at = performance.now(); this._d = NaN;
+        this._paused = true; this._rate = 1; this._vol = 1; this._muted = false;
+        this._buf = 0; this._src = ''; this._onReady = null;
+        this.videoWidth = 0; this.videoHeight = 0; this.readyState = 0; this.ended = false;
+        this.style = {}; this.textTracks = null;
+        this.tracksInfo = null;
+        window.__hn = m => this._msg(m);
+    }
+    get currentTime() {
+        if (this._paused || this.readyState < 3) return this._t;
+        return Math.min(this._t + (performance.now() - this._at) / 1000 * this._rate, this._d || Infinity);
+    }
+    set currentTime(v) {
+        this._t = Math.max(0, +v || 0); this._at = performance.now();
+        this.app.nvSeek(this._t);
+        // Tarayıcı da sarmadan sonra 'seeked' atar; oda senkronu buna bakıyor.
+        setTimeout(() => this._fire('seeked'), 0);
+    }
+    get duration() { return this._d; }
+    get paused() { return this._paused; }
+    get playbackRate() { return this._rate; }
+    set playbackRate(r) { if (r === this._rate) return; this._t = this.currentTime; this._at = performance.now(); this._rate = r; this.app.nvRate(r); }
+    get volume() { return this._vol; }
+    set volume(v) { this._vol = Math.max(0, Math.min(1, v)); this._applyVol(); }
+    get muted() { return this._muted; }
+    set muted(m) { this._muted = !!m; this._applyVol(); }
+    _applyVol() { this.app.nvVolume(this._muted ? 0 : this._vol); this._fire('volumechange'); }
+    get buffered() { const e = this._buf; return { length: e > 0 ? 1 : 0, start: () => 0, end: () => e }; }
+
+    play() {
+        this.app.nvPlay();
+        if (this._paused) {
+            this._t = this.currentTime; this._paused = false; this._at = performance.now(); this._fire('play');
+            // Tarayıcı, veri yokken oynatılınca yeniden 'waiting' atar; yerel taraf
+            // zaten tamponlamadaysa yeni olay gelmiyor ve lider odaya "bekleyin"
+            // demiyordu: misafir oynayıp kalp atışıyla geri çekiliyordu (ölçüldü).
+            if (this.readyState < 3) setTimeout(() => { if (!this._paused && this.readyState < 3) this._fire('waiting'); }, 0);
+        }
+        return Promise.resolve();
+    }
+    pause() {
+        this.app.nvPause();
+        if (!this._paused) { this._t = this.currentTime; this._paused = true; this._fire('pause'); }
+    }
+    open(url, subs, onReady) {
+        this._src = url; this._onReady = onReady; this.readyState = 0; this._d = NaN;
+        this._t = 0; this._paused = true; this.ended = false; this.tracksInfo = null;
+        this.app.nvLoad(url, JSON.stringify(subs || []), 0);
+    }
+    removeAttribute() { this._src = ''; this._onReady = null; this.app.nvClear(); }
+    getAttribute(k) { return k === 'src' ? this._src : null; }
+    load() { }
+    querySelectorAll() { return []; }
+    append() { }
+    requestPictureInPicture() { return Promise.reject(new Error('yok')); }
+    _fire(name) { this.dispatchEvent(new Event(name)); }
+
+    _msg(m) {
+        if ('fs' in m && this.player.onNativeFs) this.player.onNativeFs(!!m.fs);
+        if (m.s) {
+            const s = m.s;
+            this._t = s.t; this._at = performance.now();
+            const d = s.d === null ? NaN : s.d;
+            if (d !== this._d) { this._d = d; this._fire('durationchange'); }
+            this._buf = s.b || 0;
+            if (s.vw) { this.videoWidth = s.vw; this.videoHeight = s.vh; }
+            if (Math.abs((s.r || 1) - this._rate) > 0.001 && !this._paused) this._rate = s.r;
+            this._fire('timeupdate');
+        }
+        for (const ev of m.e || []) {
+            if (ev === 'loadedmetadata') {
+                this.readyState = 4;
+                const r = this._onReady; this._onReady = null;
+                if (r) r();
+                this._fire('loadedmetadata');
+            } else if (ev === 'playing' || ev === 'canplay') {
+                this.readyState = 4; this._fire(ev);
+            } else if (ev === 'waiting') {
+                this.readyState = 2; this._fire('waiting');
+            } else if (ev === 'ended') {
+                this.ended = true; this._paused = true; this._fire('pause'); this._fire('ended');
+            } else if (ev === 'pause') {
+                // Yerel taraf kendisi durdu (kulaklık çıktı vb.): oda bilsin.
+                if (!this._paused) { this._t = this.currentTime; this._paused = true; this._fire('pause'); }
+            } else if (ev === 'error') {
+                // 'error' olayı atılmıyor: dinleyicisi aynı bildirimi ikinci kez basardı.
+                this.player._bufferEnd(this._t);
+                toast(m.msg ? `Video açılamadı (${m.msg}).` : 'Video açılamadı.', 'err');
+            }
+        }
+        if (m.tracks) { this.tracksInfo = m.tracks; this.player.onChange(); }
+        if (m.cues) this.player._drawLines(m.cues);
+    }
+}
+
 export class Player {
     constructor(root, { roomId, emit, onChange }) {
         this.root = root;
@@ -54,7 +167,16 @@ export class Player {
         this.onEnded = null;
         this.fill = false;
         this.brightness = 1;
-        this.video = $('#video', root);
+        // Uygulamanın içindeysek video yerel oynatıcıda (pil; bkz. NativeVideo).
+        const app = window.HayaletApp;
+        this.native = !!(app && app.nvLoad);
+        this.video = this.native ? new NativeVideo(app, this) : $('#video', root);
+        if (this.native) {
+            this.app = app;
+            root.classList.add('native');
+            document.documentElement.classList.add('native-video');
+            this._watchRect();
+        }
         this.ytWrap = $('#yt', root);
         this.frame = $('#frame', root);
         this.subLayer = $('#subs', root);
@@ -186,7 +308,39 @@ export class Player {
         return u.toString();
     }
 
+    /** Yerel oynatıcı sahnenin tam altında dursun: yer değişince bildir. */
+    _watchRect() {
+        const screen = $('.screen', this.root);
+        let last = '';
+        const report = () => {
+            const r = screen.getBoundingClientRect();
+            const key = [r.left, r.top, r.width, r.height].map(Math.round).join(',');
+            if (key === last) return;
+            last = key;
+            this.app.nvRect(r.left, r.top, r.width, r.height, window.devicePixelRatio || 1);
+        };
+        if (window.ResizeObserver) new ResizeObserver(report).observe(screen);
+        addEventListener('resize', report);
+        // Konum boyut değişmeden de kayabilir (sohbet paneli, klavye); ucuz yoklama.
+        setInterval(report, 1000);
+        report();
+    }
+
+    _nativeSubs(list) {
+        return (list || []).map(s => typeof s === 'string' ? { url: s, label: null } : s)
+            .filter(s => s && s.url && !isForced(`${s.label} ${s.url}`))
+            .map(s => {
+                const tr = /tr|türk|turk/i.test(`${s.label || ''} ${s.url}`);
+                return { url: new URL(this.proxyUrl(s.url), location.href).href, label: tr ? 'Türkçe' : (s.label || 'Altyazı'), lang: tr ? 'tr' : 'und' };
+            });
+    }
+
     _loadMedia(url, subtitles, ready) {
+        if (this.native) {
+            this.video.open(new URL(this.proxyUrl(url), location.href).href, this._nativeSubs(subtitles), ready);
+            if (store.get('oda.subOff') === '1') this.app.nvSub('off');
+            return;
+        }
         const src = this.proxyUrl(url);
         if (/m3u8/i.test(url) && window.Hls && Hls.isSupported()) {
             const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
@@ -270,6 +424,8 @@ export class Player {
             if (!this.isSyncing && this.ytStarted) this._bufferSchedule(t);
         } else if (e.data === 0) {    // ENDED
             this._bufferEnd(t);
+            // İzleme sırası YouTube videosundan sonra da ilerlesin.
+            if (this.onNext) this.showUpNext(5);
         }
         this._updateControls();
     }
@@ -352,7 +508,12 @@ export class Player {
         this.resumeAfterBuffering = false;
         if (this.pendingRemote) {
             const a = this.pendingRemote; this.pendingRemote = null;
-            this.remote(a.type, typeof a.currentTime === 'number' ? a.currentTime : this.time());
+            const t = typeof a.currentTime === 'number' ? a.currentTime : this.time();
+            // Beklerken gelen son komut "sar" ise oynatma da sürmeli: yalnız
+            // sarıp durunca lider duraklamış sayılıyor ve kalp atışı herkesi
+            // durduruyordu (misafir "sar + oynat" yapınca ölçüldü).
+            if (a.type === 'seek' && resume) this.syncPlay(t);
+            else this.remote(a.type, t);
         } else if (resume) {
             this.syncPlay(typeof currentTime === 'number' ? currentTime : this.time());
         }
@@ -436,23 +597,27 @@ export class Player {
         this.activeTextTrack = track || null;
         const render = () => {
             const cues = this.activeTextTrack && this.activeTextTrack.activeCues;
-            this.subLayer.replaceChildren();
-            if (!cues || !cues.length) return;
-            // Bazı kaynakların VTT'sinde aynı satır aynı zamanlı iki kez var
-            // (Slow Horses 1x01'de 4 yerde); ekranda üst üste iki kez çıkıyordu.
-            const seen = new Set();
-            for (let i = 0; i < cues.length; i++) {
-                const text = String(cues[i].text || '').replace(/<[^>]*>/g, '')
-                    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
-                for (const line of text.split('\n').filter(Boolean)) {
-                    if (seen.has(line)) continue;
-                    seen.add(line);
-                    this.subLayer.append(h('span', { class: 'sub-line' }, line));
-                }
-            }
+            this._drawLines(cues ? Array.from(cues, c => c.text) : []);
         };
         if (this.activeTextTrack) this.activeTextTrack.oncuechange = render;
         render();
+    }
+
+    /** Altyazı satırlarını kendi katmanımıza çizer (yerel oynatıcı da buraya yollar). */
+    _drawLines(texts) {
+        this.subLayer.replaceChildren();
+        // Bazı kaynakların VTT'sinde aynı satır aynı zamanlı iki kez var
+        // (Slow Horses 1x01'de 4 yerde); ekranda üst üste iki kez çıkıyordu.
+        const seen = new Set();
+        for (const raw of texts || []) {
+            const text = String(raw || '').replace(/<[^>]*>/g, '')
+                .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+            for (const line of text.split('\n').filter(Boolean)) {
+                if (seen.has(line)) continue;
+                seen.add(line);
+                this.subLayer.append(h('span', { class: 'sub-line' }, line));
+            }
+        }
     }
 
     _bindHlsTextTrack() {
@@ -467,6 +632,7 @@ export class Player {
     setSub(id) {
         this.selectedSub = id || null;
         store.set('oda.subOff', id ? '0' : '1');
+        if (this.native) { this.app.nvSub(id || 'off'); if (!id) this._drawLines([]); return; }
         if (this.hls) this.hls.subtitleTrack = -1;
         for (const t of this.manualTracks) { try { t.el.track.mode = 'disabled'; } catch (_) { } }
         if (!id) { this._setTextTrack(null); this.onChange(); return; }
@@ -499,6 +665,18 @@ export class Player {
     // --- parça seçimi (kalite, ses, altyazı) -----------------------------------
     tracks() {
         const out = { levels: [], audio: [], subs: [] };
+        const nt = this.native && this.video.tracksInfo;
+        if (nt) {
+            if (nt.levels.length > 1) {
+                out.levels.push({ id: 'auto', label: 'Otomatik', active: nt.auto });
+                [...nt.levels].sort((a, b) => b.h - a.h)
+                    .forEach(l => out.levels.push({ id: l.id, label: l.label, active: !nt.auto && l.active }));
+            }
+            if (nt.audio.length > 1) nt.audio.forEach(a => out.audio.push(a));
+            nt.subs.forEach(s => out.subs.push(s));
+            this.selectedSub = (nt.subs.find(s => s.active) || {}).id || null;
+            return out;
+        }
         if (this.hls) {
             const lv = this.hls.levels || [];
             if (lv.length > 1) {
@@ -517,8 +695,14 @@ export class Player {
         this.manualTracks.forEach(t => out.subs.push({ id: 'manual:' + t.id, label: t.label, active: this.selectedSub === 'manual:' + t.id }));
         return out;
     }
-    setLevel(id) { if (this.hls) { this.hls.currentLevel = id; this.onChange(); } }
-    setAudio(id) { if (this.hls) { this.hls.audioTrack = id; this.onChange(); } }
+    setLevel(id) {
+        if (this.native) return this.app.nvLevel(String(id));
+        if (this.hls) { this.hls.currentLevel = id; this.onChange(); }
+    }
+    setAudio(id) {
+        if (this.native) return this.app.nvAudio(String(id));
+        if (this.hls) { this.hls.audioTrack = id; this.onChange(); }
+    }
 
     // --- kontroller (uygulamanın oynatıcısıyla aynı: PlayerControls.java) -----
     _bindControls() {
@@ -555,7 +739,7 @@ export class Player {
         this.ui.unlock.addEventListener('click', () => this.setLocked(false));
 
         const pip = $('[data-act=pip]', r);
-        if (document.pictureInPictureEnabled) {
+        if (document.pictureInPictureEnabled && !this.native) {
             pip.hidden = false;
             pip.addEventListener('click', () => {
                 if (document.pictureInPictureElement) return document.exitPictureInPicture().catch(() => { });
@@ -686,12 +870,15 @@ export class Player {
     setFill(on) {
         this.fill = !!on;
         this.root.classList.toggle('fill', this.fill);
+        if (this.native) this.app.nvFill(this.fill);
         if (this.ui) $('span', this.ui.fit).textContent = this.fill ? 'Sığdır' : 'Doldur';
     }
 
     /** Tarayıcı ekran parlaklığına erişemiyor; görüntü karartılır (%15–100). */
     setBrightness(v) {
         this.brightness = v;
+        // Uygulamada gerçek ekran parlaklığı değişir.
+        if (this.native) return this.app.nvBrightness(v);
         this.video.style.filter = v < 0.995 ? `brightness(${v.toFixed(2)})` : '';
     }
 
@@ -773,10 +960,15 @@ export class Player {
         if (reveal) this.showControls(true);
     }
 
-    /** "Sonraki bölüm": fn verilirse hap son 5 dakikada, kart jenerikte ve
-     *  bölüm bitince (5 sn geri sayım) çıkar. Yalnız ev sahibinde verilir. */
-    setNext(fn) {
+    /** "Sonraki": fn verilirse hap son 5 dakikada, kart jenerikte ve bitince
+     *  (5 sn geri sayım) çıkar. Yalnız ev sahibinde verilir. `info`: kartın
+     *  üst yazısı (`kicker`), adı (`title`) ve hapın yazısı (`chip`) — sonraki
+     *  bölüm ya da izleme sırasındaki içerik. */
+    setNext(fn, info = {}) {
         this.onNext = fn || null;
+        this.nextInfo = info || {};
+        const chip = this.ui && $('span', this.ui.next);
+        if (chip) chip.textContent = this.nextInfo.chip || 'Sonraki bölüm';
         if (!fn) this.hideUpNext();
         this._updateTime();
     }
@@ -784,11 +976,12 @@ export class Player {
     showUpNext(seconds) {
         if (!this.onNext) return;
         clearInterval(this._upT);
-        const title = $('#p-title') ? $('#p-title').textContent : '';
+        const info = this.nextInfo || {};
+        const title = info.title || ($('#p-title') ? $('#p-title').textContent : '');
         const play = h('button', { class: 'btn light', type: 'button', onclick: () => { this.hideUpNext(); if (this.onNext) this.onNext(); } },
             icon('play'), h('span', {}, 'Oynat'));
         const cancel = h('button', { class: 'btn glass', type: 'button', onclick: () => this.hideUpNext() }, 'İptal');
-        this.ui.upnext.replaceChildren(h('div', { class: 'p-up-k' }, 'SONRAKİ BÖLÜM'), h('div', { class: 'p-up-t' }, title),
+        this.ui.upnext.replaceChildren(h('div', { class: 'p-up-k' }, info.kicker || 'SONRAKİ BÖLÜM'), h('div', { class: 'p-up-t' }, title),
             h('div', { class: 'p-up-row' }, play, cancel));
         this.ui.upnext.hidden = false;
         if (seconds > 0) {
@@ -879,7 +1072,9 @@ export class Player {
             ? list.map(it => row(it.label, null, { checked: it.active, onclick: () => fn(it) }))
             : [row(fallback, null, { checked: true })];
         const nameOf = (list, dflt) => (list.find(x => x.active) || {}).label || dflt;
-        const lv = this.hls && this.hls.levels && this.hls.levels[this.hls.currentLevel];
+        const lvN = this.native && t.levels.find(l => l.active && l.id !== 'auto');
+        const lv = lvN ? { height: parseInt(lvN.label, 10) }
+            : this.hls && this.hls.levels && this.hls.levels[this.hls.currentLevel];
         const size = SUB_SIZES.reduce((a, b) => Math.abs(b[1] - st.size) < Math.abs(a[1] - st.size) ? b : a);
         const color = SUB_COLORS.find(c => c[1] === st.color) || SUB_COLORS[0];
         const bg = SUB_BGS.find(b => b[1] === st.bg) || SUB_BGS[0];
