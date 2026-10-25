@@ -2,7 +2,7 @@
 
 Eski Node sürümü uzaktan izlemeyi bu tünelle yapıyordu: hesap istemiyor,
 Cloudflare'in ağından geçtiği için hızlı. Telefonda ise uzun süre "çalışmıyor"
-sanıldı (oda-notlari.md): cloudflared saf Go ile statik derlenmiş, Go'nun
+sanıldı (docs/oda-notlari.md): cloudflared saf Go ile statik derlenmiş, Go'nun
 kendi DNS çözücüsü `/etc/resolv.conf` arıyor, Android'de o dosya yok ve
 `[::1]:53`'e düşüp duruyor. Root olmadan dosya yazılamıyor, 53'e vekil
 konamıyor.

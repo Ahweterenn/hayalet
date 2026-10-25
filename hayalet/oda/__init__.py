@@ -6,5 +6,5 @@ yerine telefonundan sunucu olabilmesi.
 
 Şu an yalnızca `selftest` dolu — telefonda yığının gerçekten ayağa kalktığını
 doğrulamak için. Oda/senkron mantığı ve proxy sonraki fazlarda gelecek
-(bkz. depo kökündeki oda-notlari.md).
+(bkz. docs/oda-notlari.md).
 """

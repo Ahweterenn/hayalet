@@ -668,10 +668,32 @@ def _doctor_site(adapter, args, tor_proxy) -> list[tuple[str, bool, str]]:
         # girmemiş bir filmdi ve "kaynak butonu bulunamadı" hatası, adapter sapasağlam
         # çalışırken kırmızı raporlandı. Bu yüzden birkaç aday sırayla denenir ve
         # yalnızca HEPSİ başarısız olursa arıza bildirilir.
+        # Bölüm listesi DİZİ üzerinden doğrulanmalı: film tek sentetik bölümle her
+        # zaman "listelenir", yani bozuk bir bölüm şemasını örter. Canlı yaşandı
+        # (2026-10): Dizipal bölüm linklerini değiştirdi, her dizi 0 bölüm verdi,
+        # ama ilk aday bir filmdi ve doktor her şeyi yeşil gösterdi.
+        diziler = [s for s in results if not catalog.is_movie(s)]
+        if diziler:
+            dizi_bolum = {}
+            for s in diziler[:3]:
+                try:
+                    dizi_bolum[s.name] = len(adapter.get_episodes(net, session, s))
+                except Exception as e:
+                    dizi_bolum[s.name] = f"{type(e).__name__}: {e}"
+            if not any(isinstance(n, int) and n > 0 for n in dizi_bolum.values()):
+                ozet = ", ".join(f"{ad}: {n}" for ad, n in dizi_bolum.items())
+                steps.append(("Bölüm/kaynak listesi", False,
+                              f"Hiçbir dizide bölüm bulunamadı ({ozet}) — bölüm "
+                              "linklerinin şeması değişmiş olabilir (bkz. "
+                              "config.SELECTORS)."))
+                return steps
+        adaylar = diziler[:3] + [s for s in results if catalog.is_movie(s)][:3]
+        not_ = "" if diziler else " (aramada dizi çıkmadı; dizi bölüm listesi denenmedi)"
+
         last_list_err: str | None = None
         last_extract_err: str | None = None
         listed: tuple | None = None          # (series, episodes) — ilk listelenebilen
-        for series in results[:3]:
+        for series in adaylar[:3]:
             try:
                 episodes = adapter.get_episodes(net, session, series)
             except Exception as e:
@@ -693,7 +715,7 @@ def _doctor_site(adapter, args, tor_proxy) -> list[tuple[str, bool, str]]:
                 last_extract_err = f"{series.name}: master URL boş döndü"
                 continue
             steps.append(("Bölüm/kaynak listesi", True,
-                          f"{series.name}: {len(episodes)} adet"))
+                          f"{series.name}: {len(episodes)} adet{not_}"))
             steps.append(("Uçtan uca extract", True,
                           f"{series.name} → {merged.video_master_url[:60]}…"))
             return steps
@@ -703,9 +725,9 @@ def _doctor_site(adapter, args, tor_proxy) -> list[tuple[str, bool, str]]:
                           last_list_err or "hiçbir adayda bölüm/kaynak yok."))
             return steps
         steps.append(("Bölüm/kaynak listesi", True,
-                      f"{listed[0].name}: {len(listed[1])} adet"))
+                      f"{listed[0].name}: {len(listed[1])} adet{not_}"))
         steps.append(("Uçtan uca extract", False,
-                      f"{last_extract_err} (denenen {min(len(results), 3)} adayın "
+                      f"{last_extract_err} (denenen {min(len(adaylar), 3)} adayın "
                       f"hiçbirinde kaynak çözülemedi)"))
         return steps
     finally:

@@ -41,7 +41,7 @@ hak sahiplerine aittir. Bu aracı kullanmak, bulunduğun ülkenin telif hakkı v
 sorumluluğunu **sana** yükler; geliştirici(ler) araçtan doğabilecek herhangi bir kullanım için sorumluluk
 kabul etmez. Proje **"olduğu gibi"**, hiçbir garanti verilmeksizin sunulur.
 
-> DRM'li kaynak eklenmez, coğrafi sınırlama aşılmaz — bu projenin kuralı (bkz. `kanal-notlari.md`).
+> DRM'li kaynak eklenmez, coğrafi sınırlama aşılmaz — bu projenin kuralı (bkz. [`docs/kanal-notlari.md`](docs/kanal-notlari.md)).
 
 ---
 
@@ -203,7 +203,7 @@ Kapsayıcı: tek ses varsa `mp4`, çoklu ses ya da altyazı varsa `mkv` (`langua
 | **webdramaturkey2.com** | Dizi | Adaptörün kendi içinde | — |
 
 > Türk dizisi kapsamını kanalların kendi ücretsiz/yasal yayınlarıyla genişletme yoklamaları
-> `kanal-notlari.md`'de (Kanal D, Show TV, ATV, Star TV, TLC, DMAX, TRT Çocuk — henüz adaptör yazılmadı).
+> [`docs/kanal-notlari.md`](docs/kanal-notlari.md)'de (Kanal D, Show TV, ATV, Star TV, TLC, DMAX, TRT Çocuk — henüz adaptör yazılmadı).
 
 ---
 
@@ -322,7 +322,7 @@ renk sunucudaki kayıttan gelir — istemcinin bildirdiği ada güvenilmez.
 > Oda şu an **Android uygulamasından** (`OdaService`) ayağa kalkıyor; masaüstünde CLI bayrağı yok,
 > elle bir `OdaServer(...)` kurmak gerekir. Bağımlılıklar: `pip install -e ".[oda]"` —
 > bu olmadan `hayalet.oda.server` **import edilemez**.
-> Mimari ve ölçülmüş tuzakların tamamı: **[`oda-notlari.md`](oda-notlari.md)**.
+> Mimari ve ölçülmüş tuzakların tamamı: **[`docs/oda-notlari.md`](docs/oda-notlari.md)**.
 
 ---
 
@@ -464,8 +464,8 @@ hayalet/
 └── assets/hls.min.js       # yerel hls.js (CDN'e bağımlılık yok)
 
 tests/                      # ağsız birim testleri + donmuş gerçek fixture'lar
-kanal-notlari.md            # Türk TV kanalları yoklaması (henüz adaptör yok)
-oda-notlari.md              # oda mimarisi + ölçülmüş tuzaklar
+docs/kanal-notlari.md       # Türk TV kanalları yoklaması (henüz adaptör yok)
+docs/oda-notlari.md         # oda mimarisi + ölçülmüş tuzaklar
 baslat.bat                  # Windows başlatıcı (UTF-8 zorlar, venv python'u kullanır)
 ```
 

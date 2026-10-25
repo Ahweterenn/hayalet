@@ -50,6 +50,57 @@ def _unb64(s: str) -> str:
     return base64.urlsafe_b64decode(s.encode()).decode()
 
 
+def first_pts(data: bytes) -> float | None:
+    """MPEG-TS parçasındaki akışların EN ERKEN başlangıç PTS'si (sn); TS değilse None.
+
+    En erken olan alınır, çünkü oynatıcılar zaman çizgisini ona göre kuruyor:
+    hdfilmcehennemi parçalarında görüntü 0,184'te, gömülü ses 0,101'de başlıyor
+    ve hls.js altyazıyı tam 0,101 kaydırıyordu (ölçüldü); görüntünün değeriyle
+    eşlemek 0,083 sn fazla düzeltiyordu.
+
+    Bazı CDN'ler parçanın başına sahte resim başlığı koyuyor; 188 baytlık
+    adımla tutarlı 0x47 dizisinin başladığı yer aranır.
+    """
+    ilk: dict[int, float] = {}
+    bas = next((i for i in range(min(len(data), 4096))
+                if all(i + k * 188 < len(data) and data[i + k * 188] == 0x47
+                       for k in range(5))), None)
+    if bas is None:
+        return None
+    for p in range(bas, len(data) - 188, 188):
+        pk = data[p:p + 188]
+        if pk[0] != 0x47 or not pk[1] & 0x40:
+            continue
+        pid = ((pk[1] & 0x1F) << 8) | pk[2]
+        if pid in ilk:
+            continue
+        afc = (pk[3] >> 4) & 3
+        off = 4 + (1 + pk[4] if afc in (2, 3) else 0)
+        if afc == 2 or off + 14 > 188:
+            continue
+        pes = pk[off:]
+        if pes[0:3] != b"\x00\x00\x01" or not 0xC0 <= pes[3] <= 0xEF:
+            continue
+        if not pes[7] & 0x80:
+            continue
+        b = pes[9:14]
+        ilk[pid] = ((((b[0] >> 1) & 7) << 30) | (b[1] << 22) | ((b[2] >> 1) << 15)
+                    | (b[3] << 7) | (b[4] >> 1)) / 90000.0
+    return min(ilk.values()) if ilk else None
+
+
+def add_timestamp_map(vtt: bytes, pts: float | None) -> bytes:
+    """WebVTT'ye HLS X-TIMESTAMP-MAP ekler: altyazının 0'ı videonun `pts`'sine."""
+    if pts is None or b"X-TIMESTAMP-MAP" in vtt[:400]:
+        return vtt
+    satir = b"X-TIMESTAMP-MAP=MPEGTS:%d,LOCAL:00:00:00.000" % round(pts * 90000)
+    bas = vtt.lstrip(b"\xef\xbb\xbf")
+    if not bas.startswith(b"WEBVTT"):
+        return vtt
+    ilk, _, kalan = bas.partition(b"\n")
+    return ilk.rstrip(b"\r") + b"\n" + satir + b"\n" + kalan
+
+
 def build_subs_playlist(vtt_local_url: str) -> str:
     """Tek .vtt'yi saran VOD altyazı media playlist'i (vtt zaten proxy URL'si)."""
     return (
@@ -385,6 +436,7 @@ if((tt.kind==='subtitles'||tt.kind==='captions')&&tt.mode==='showing')tt.mode='h
 function pollCaptions(){
 if(!h){capOverlay.style.display='none';return;}
 hideNativeCues();
+applySubOffset();   // sonradan eklenen cue'lar da kaydırılsın (kendi içinde ucuz)
 var text='',tts=v.textTracks;
 for(var i=0;i<tts.length;i++){
 var tt=tts[i];
@@ -403,6 +455,53 @@ capOverlay.style.display='none';
 }
 }
 setInterval(pollCaptions,120);
+
+// --- Altyazı-ses hizalaması (bkz. core/subsync.py) ----------------------
+// Ölçüm sunucuda, oynatmayla PARALEL sürer; burada yalnız sonucu bekleyip
+// YÜKLÜ cue'ların zamanlarını yerinde kaydırıyoruz. Cue nesneleri değişebilir
+// olduğu için activeCues kendiliğinden yeniden hesaplanır — çizim kodunun
+// (pollCaptions) hiç haberi olmaz, bu yüzden en az riskli yol budur.
+var subOff=0,subRate=1,subDone=false,subTimer=null,cueCounts={};
+function applySubOffset(){
+if(!subOff&&subRate===1)return;
+var tts=v.textTracks;
+for(var i=0;i<tts.length;i++){
+var tt=tts[i];
+if(tt.kind!=='subtitles'&&tt.kind!=='captions')continue;
+var cs=tt.cues;
+if(!cs)continue;
+// hls.js cue'ları parça parça ekleyebilir; sayı değişmediyse tarama yapma.
+if(cueCounts[i]===cs.length)continue;
+cueCounts[i]=cs.length;
+for(var j=0;j<cs.length;j++){
+var c=cs[j];
+if(c._sy)continue;              // aynı cue iki kez kaydırılmasın
+c._sy=1;
+try{
+var st=c.startTime*subRate+subOff,en=c.endTime*subRate+subOff;
+c.startTime=st<0?0:st;
+c.endTime=en<0?0:en;
+}catch(err){}
+}
+}
+}
+function pollSubSync(){
+fetch('/subsync',{cache:'no-store'}).then(function(r){return r.json();})
+.then(function(j){
+if(!j||!j.ready)return;
+subDone=true;
+if(subTimer){clearInterval(subTimer);subTimer=null;}
+subOff=+j.offset||0;
+subRate=+j.rate||1;               // kare hızı uyuşmazlığı (bkz. subsync.RATES)
+if(subOff||subRate!==1)applySubOffset();
+}).catch(function(){});
+}
+function resetSubSync(){
+subOff=0;subRate=1;subDone=false;cueCounts={};
+if(subTimer)clearInterval(subTimer);
+subTimer=setInterval(function(){if(!subDone)pollSubSync();},2000);
+}
+resetSubSync();
 
 var stack=['root'];
 var h=null;
@@ -546,6 +645,7 @@ addRow(SUBBG_L[k],null,subBg===k,function(){subBg=k;localStorage.setItem('subbg'
 // yeniden çağrılır — önce eski Hls örneğini yok edip yenisini kurar.
 function loadStream(source){
 if(h){try{h.destroy();}catch(e){}h=null;}
+resetSubSync();   // kayma bölüme özgü: yeni bölümde baştan ölçülür
 if(window.Hls&&Hls.isSupported()){
 // renderTextTracksNatively:true → cue'lar native TextTrack'lere yazılır (bize
 // activeCues verir, hls.js kendi <div> altyazı katmanını OLUŞTURMAZ). Ardından
@@ -650,6 +750,14 @@ class HLSProxy:
         # ayarlar; tarayıcı /next'e istek atınca çağrılır ve sıradaki bölümün
         # {"src","title","hasNext"} bilgisini döndürür (None → başka bölüm yok).
         self.next_handler = None
+        # Altyazı-ses hizalaması (bkz. core/subsync.py). Ölçüm oynatmayla
+        # PARALEL sürer — izleyici beklemez. Sonuç çıkınca actions.watch burayı
+        # doldurur, tarayıcı /subsync'ten okuyup yüklü cue'ları yerinde kaydırır.
+        # Bölüm değişince sıfırlanmalı: kayma bölüme özgüdür.
+        self.subsync = {"ready": False, "offset": 0.0}
+        # Videonun ilk PTS'si (sn). Verilirse servis edilen her .vtt'ye
+        # X-TIMESTAMP-MAP eklenir (bkz. add_timestamp_map).
+        self.vtt_pts: float | None = None
         # Dakika-dakika "kaldığın yerden devam": tarayıcı birkaç saniyede bir
         # /progress'e (currentTime, duration, nesil) bildirir; actions.watch bunu
         # prefs.json'a yazan (t, d, g) -> None imzalı bir callback'e bağlar. Proxy
@@ -881,6 +989,20 @@ class HLSProxy:
                     self._safe_write(body)
                     return
 
+                # Altyazı hizalaması: tarayıcı ölçüm bitene kadar birkaç saniyede
+                # bir buraya bakar. Ölçüm arka planda sürdüğü için oynatma hiç
+                # beklemez; sonuç gelince cue'lar yerinde kaydırılır.
+                if parsed.path == "/subsync":
+                    body = json.dumps(proxy.subsync).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type",
+                                     "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self._safe_write(body)
+                    return
+
                 # Sonraki bölüm: tarayıcı (bölüm bitince ya da ⏭ düğmesi) burayı
                 # çağırır; advance() sıradaki bölümü aynı proxy'de çözer. Ağ işi
                 # birkaç saniye sürebilir — tarayıcı bu isteği bekler.
@@ -952,9 +1074,13 @@ class HLSProxy:
                     q = parse_qs(parsed.query)
                     text, kind = proxy._virtual.get(int(q.get("i", ["-1"])[0]), ("", "m3u8"))
                     body = text.encode()
+                    if kind == "vtt":   # hizalama sonrasi kaydirilmis altyazi da eslesmeli
+                        body = add_timestamp_map(body, proxy.vtt_pts)
                     self.send_response(200 if text else 404)
-                    self.send_header("Content-Type", "application/vnd.apple.mpegurl"
-                                     if kind == "m3u8" else "text/plain")
+                    self.send_header("Content-Type",
+                                     "application/vnd.apple.mpegurl" if kind == "m3u8"
+                                     else "text/vtt; charset=utf-8" if kind == "vtt"
+                                     else "text/plain")
                     self.send_header("Content-Length", str(len(body)))
                     self.send_header("Access-Control-Allow-Origin", "*")
                     self.end_headers()
@@ -1055,6 +1181,7 @@ class HLSProxy:
                     ct = "application/vnd.apple.mpegurl"
                 elif parsed.path.endswith(".vtt") or ".vtt" in low:
                     ct = "text/vtt"
+                    body = add_timestamp_map(body, proxy.vtt_pts)
 
                 self.send_response(200)
                 self.send_header("Content-Type", ct)

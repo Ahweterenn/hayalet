@@ -28,6 +28,15 @@ _SCAN = 24
 _SCAN_WORKERS = 12
 _SCAN_TIMEOUT = 8     # sn; tarama yoklaması için (normal istekler 20 sn'de kalır)
 
+# Tarama penceresi, TOHUM NE KADAR ESKİYSE o kadar genişler. Sebep ölçüldü:
+# KNOWN_DOMAIN 10 Ağustos'ta 1574'e sabitlenmişti, 23 Ekim'de site 1822'deydi —
+# 74 günde 248 adım, günde ~3.4. Sabit 24'lük pencere birkaç günden eski bir
+# tohumu kurtaramaz. Marjla günde 5 adım sayıyoruz; üst sınır, taramanın
+# kullanıcıyı bekletmemesi için var (paralel ve tek denemelik olduğundan
+# _SCAN_MAX adres ~_SCAN_MAX/_SCAN_WORKERS × _SCAN_TIMEOUT'un altında biter).
+_DRIFT_PER_DAY = 5
+_SCAN_MAX = 240
+
 
 class ResolverError(Exception):
     """Hiçbir domain adayı doğrulanamadı — kullanıcı --domain ile elle vermeli."""
@@ -156,14 +165,38 @@ def _follow_canonical(net: Network, url: str, html: str,
     return url, html
 
 
-def _cached() -> str | None:
+def _record() -> tuple[str | None, float]:
+    """Önbellekteki domaini ve kaydın YAŞINI (gün) döndürür — TTL'e bakmadan."""
     try:
         d = json.loads(_CACHE.read_text(encoding="utf-8"))
-        if time.time() - d.get("ts", 0) < _CACHE_TTL:
-            return d.get("domain")
+        return d.get("domain"), max(0.0, (time.time() - d.get("ts", 0)) / 86400)
     except Exception:
-        return None
-    return None
+        return None, 0.0
+
+
+def _cached() -> str | None:
+    domain, age = _record()
+    return domain if domain and age * 86400 < _CACHE_TTL else None
+
+
+def _stale() -> tuple[str | None, float]:
+    """TTL'i geçmiş önbellek kaydı: artık 'doğrulanmış domain' değil ama hâlâ
+    elimizdeki EN İYİ TOHUM.
+
+    Eski davranışta TTL dolunca kayıt tamamen çöpe gidiyordu ve tarama üç ay
+    önce elle yazılmış KNOWN_DOMAIN'den başlıyordu — gerçek domain 248 adım
+    ileri kaymış olduğu için hiç bulunamadı (yaşandı: kullanıcı bir gün ara
+    verdi, araç 'domain bulunamadı' dedi). Oysa dün çalışan adres, aylık
+    sabitten tanım gereği daha yakındır: hem ucuza yoklanır (hâlâ ayakta
+    olabilir) hem de tarama aralığının başlangıcı olur.
+    """
+    domain, age = _record()
+    return (domain, age) if domain else (None, 0.0)
+
+
+def _domain_no(url: str | None) -> int | None:
+    m = re.search(r"dizipal(\d+)\.com", url or "")
+    return int(m.group(1)) if m else None
 
 
 def _save(domain: str) -> None:
@@ -183,19 +216,27 @@ def resolve(net: Network, session: SessionState, override: str | None = None,
     pinned = override.rstrip("/") if override else None
     if pinned:
         priority.append(pinned)
+    stale, stale_age = _stale() if use_cache else (None, 0.0)
     if use_cache:
         c = _cached()
         if c:
             priority.append(c)
+        if stale:
+            priority.append(stale)   # TTL dolmuş olabilir ama hâlâ ayakta olabilir
     priority.append(config.KNOWN_DOMAIN)
     priority = list(dict.fromkeys(priority))     # tekrarları at (cache == known)
 
-    # Artan sayı taraması: dizipalNNNN -> NNNN+scan
+    # Artan sayı taraması: tohum -> tohum+scan. Tohum, KNOWN_DOMAIN ile son
+    # çalışan domainden HANGİSİ İLERİDEYSE o (bkz. _stale): numara hep artar,
+    # geride kalan bir tohumdan başlamak aradaki ölü adresleri boşuna yoklar.
     scan_urls: list[str] = []
-    m = re.search(r"(dizipal)(\d+)(\.com)", config.KNOWN_DOMAIN)
-    if m:
-        base_n = int(m.group(2))
-        scan_urls = [f"https://{m.group(1)}{n}{m.group(3)}"
+    known_n = _domain_no(config.KNOWN_DOMAIN)
+    stale_n = _domain_no(stale)
+    base_n = max([n for n in (known_n, stale_n) if n is not None], default=None)
+    if base_n is not None:
+        if base_n == stale_n and scan == _SCAN:   # çağıran elle genişlik vermediyse
+            scan = min(scan + int(stale_age * _DRIFT_PER_DAY), _SCAN_MAX)
+        scan_urls = [f"https://dizipal{n}.com"
                      for n in range(base_n, base_n + scan + 1)]
 
     seen: set[str] = set()
@@ -222,7 +263,11 @@ def resolve(net: Network, session: SessionState, override: str | None = None,
                 yield url, _fetch(net, url, retries=1, timeout=_SCAN_TIMEOUT)
         rest = [u for u in scan_urls if u not in seen]
         hits = _scan_reachable(session, rest)
-        for url in rest:
+        # BÜYÜKTEN KÜÇÜĞE: numara hep arttığı için canlı domain, ulaşılabilen
+        # adresler arasında en yüksek numaralı olandır. Küçükten başlamak,
+        # geride kalan ayna kümesini (ölçüldü: 1584-1592 arası dokuz adres hâlâ
+        # 200 dönüyor ama araması ölü) tek tek eleyip zaman yakıyordu.
+        for url in sorted(rest, key=lambda u: _domain_no(u) or 0, reverse=True):
             if url in hits:
                 yield url, hits[url]
 

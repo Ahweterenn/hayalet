@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 from hayalet import config
-from hayalet.core import logs, utils
+from hayalet.core import logs, subsync, utils
 from hayalet.core.extractor import StreamInfo
 from hayalet.core.network import Network
 from hayalet.core.session import SessionState
@@ -43,6 +44,110 @@ def _require(tool: str) -> str | None:
         if Path(cand).exists():
             return cand
     return None
+
+
+_SYNC_JOIN_S = 180      # hizalama ölçümü için indirme sonrası en fazla bekleme
+
+# Geçici ".part" adına yazarken ffmpeg'e verilecek konteyner (bkz. download()).
+_CONTAINER = {".mkv": "matroska", ".mp4": "mp4"}
+
+
+def _shift_embedded_sub(ff: str, out_file: Path, sub_text: str,
+                        res: "subsync.SyncResult", progress=None) -> None:
+    """Ölçülen kaymayı indirilmiş dosyadaki altyazıya uygular.
+
+    Video ve ses KOPYALANIR (yeniden kodlama yok), yalnız altyazı akışı
+    kaydırılmış sürümüyle değiştirilir — bu yüzden saniyeler sürer. Yeni dosya
+    önce geçici ada yazılır, ancak ffmpeg başarıyla bitince yerine geçer:
+    yarıda kesilme elde bozuk bir dosya bırakmasın.
+    """
+    tmp_vtt = config.CACHE_DIR / f"{out_file.stem}.shift.vtt"
+    tmp_out = out_file.with_name(f"{out_file.stem}.sync{out_file.suffix}")
+    try:
+        tmp_vtt.parent.mkdir(parents=True, exist_ok=True)
+        tmp_vtt.write_text(subsync.shift_vtt(sub_text, res.offset, res.rate),
+                           encoding="utf-8")
+        r = subprocess.run(
+            [ff, "-y", "-hide_banner", "-loglevel", "error",
+             "-i", str(out_file), "-i", str(tmp_vtt),
+             "-map", "0:v", "-map", "0:a", "-map", "1:0",
+             "-c:v", "copy", "-c:a", "copy", "-c:s", "srt",
+             "-metadata:s:s:0", "language=tur",
+             "-metadata:s:s:0", "title=Türkçe",
+             str(tmp_out)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if r.returncode != 0 or not tmp_out.exists():
+            _say(progress, "[!] Altyazı kaydırması uygulanamadı, dosya olduğu "
+                           "gibi bırakıldı.")
+            logs.log.warning("altyazı kaydırma FAIL rc=%s: %s",
+                             r.returncode, (r.stderr or "").strip()[-200:])
+            return
+        tmp_out.replace(out_file)
+        if res.rate != 1.0:
+            _say(progress, f"[✔] Altyazı zamanla kayıyordu (kare hızı farkı, oran "
+                           f"{res.rate:.4f}); sese göre düzeltildi.")
+        else:
+            _say(progress, f"[✔] Altyazı sese göre {res.offset:+.1f} sn kaydırıldı "
+                           f"(puan {res.score:.2f}).")
+        logs.log.info("altyazı kaydırıldı: %s | %s", out_file.name, res.reason)
+    except Exception as e:
+        logs.log.warning("altyazı kaydırma atlandı: %s", e)
+    finally:
+        for p in (tmp_vtt, tmp_out):
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _start_subsync(proxy, session: SessionState, merged) -> None:
+    """Altyazı-ses hizalamasını ARKA PLANDA ölçer, sonucu `proxy.subsync`e yazar.
+
+    Oynatma beklemez: ölçüm sürerken tarayıcı altyazıyı olduğu gibi gösterir,
+    sonuç gelince yüklü cue'ları yerinde kaydırır (bkz. proxy._PLAYER_TEMPLATE).
+    Ölçüm yapılamıyorsa (ffmpeg yok, altyazı yok) "hazır, kayma 0" yazılır ki
+    tarayıcı boşuna yoklamaya devam etmesin.
+
+    Altyazıyı ÇAĞIRANIN `Network`'ü ile değil kendi kopyasıyla indirir: tek bir
+    curl-cffi istemcisi thread'ler arasında güvenli değil ve bu iş /next'i
+    işleyen tarayıcı thread'iyle aynı anda çalışabiliyor.
+    """
+    proxy.subsync = {"ready": False, "offset": 0.0}
+    ff = _require("ffmpeg")
+    if not ff or not merged.subtitle_url or not merged.audios:
+        proxy.subsync = {"ready": True, "offset": 0.0}
+        return
+
+    def _olc() -> None:
+        net2 = None
+        try:
+            from dataclasses import replace
+            net2 = Network(replace(session, cookies=dict(session.cookies)))
+            sub_text = net2.get(merged.subtitle_url,
+                                referer=merged.subtitle_referer).text
+            ses = next((a for a in merged.audios if not a.is_turkish),
+                       merged.audios[0])
+            pr = subprocess.run(
+                subsync.probe_cmd(ff, proxy.proxied(ses.url, "m3u8",
+                                                    referer=ses.referer)),
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=900)
+            res = subsync.analyze(pr.stderr, sub_text)
+            logs.log.info("izleme altyazı hizalama: %s", res.reason)
+            proxy.subsync = {"ready": True,
+                             "offset": res.offset if res.apply else 0.0,
+                             "rate": res.rate if res.apply else 1.0}
+        except Exception as e:
+            logs.log.info("izleme altyazı hizalama atlandı: %s", e)
+            proxy.subsync = {"ready": True, "offset": 0.0}
+        finally:
+            if net2 is not None:
+                try:
+                    net2.close()
+                except Exception:
+                    pass
+
+    threading.Thread(target=_olc, daemon=True).start()
 
 
 def _say(progress, msg: str) -> None:
@@ -180,7 +285,34 @@ def _run_ffmpeg_progress(cmd: list[str], duration: float, on_update) -> tuple[in
 # Tarayıcı localhost'taki impersonating proxy'ye bağlanır; proxy master'ı (video +
 # ses + enjekte edilen Türkçe altyazı) curl-cffi ile çekip verir. Oynatma
 # proxy'nin sunduğu hls.js sayfasında (/player.html) yapılır.
-def _build_watch_master(proxy, net: Network, session: SessionState, merged):
+def _video_first_pts(net: Network, merged) -> float | None:
+    """Videonun ilk parçasındaki başlangıç zaman damgası (sn); okunamazsa None.
+
+    Damga parçanın ilk paketlerinde olduğu için yalnız başı istenir. Anlık ağ
+    hatasına karşı bir kez daha denenir; olmazsa not eklenmez (eski davranış).
+    """
+    import m3u8
+    from hayalet.core.proxy import first_pts
+    try:
+        u, ref = merged.video_master_url, merged.video_referer
+        pl = m3u8.loads(net.get(u, referer=ref).text, uri=u)
+        if pl.is_variant and pl.playlists:
+            u = pl.playlists[0].absolute_uri
+            pl = m3u8.loads(net.get(u, referer=ref).text, uri=u)
+        seg = pl.segments[0].absolute_uri
+    except Exception:
+        return None
+    for _ in range(2):
+        try:
+            return first_pts(net.get(seg, referer=ref,
+                                     headers={"Range": "bytes=0-131071"}).content)
+        except Exception:
+            pass
+    return None
+
+
+def _build_watch_master(proxy, net: Network, session: SessionState, merged,
+                        sub_text: str | None = None):
     """Birleştirilmiş akıştan, proxy'de barındırılan sentetik HLS master URL'si
     kurar. Dönüş: (yerel_master_url, ses_sayısı, altyazı_var_mı).
 
@@ -208,8 +340,18 @@ def _build_watch_master(proxy, net: Network, session: SessionState, merged):
 
     subtitle = None
     if merged.subtitle_url:
-        vtt = proxy.proxied(merged.subtitle_url, "vtt",
-                            referer=merged.subtitle_referer)
+        # sub_text verilirse altyazı uzaktan çekilmek yerine HAZIR METİN olarak
+        # proxy'de barındırılır — hizalama ölçümü bitince kaydırılmış altyazıyla
+        # yeni bir master kurmak için (Android yolu, bkz. hayalet_app.subsync_*).
+        if sub_text is not None:
+            vtt = proxy.virtual(sub_text, "vtt")
+        else:
+            vtt = proxy.proxied(merged.subtitle_url, "vtt",
+                                referer=merged.subtitle_referer)
+            # Altyazının 0'ı videonun ilk PTS'sine eşlensin (X-TIMESTAMP-MAP).
+            # Yoksa oynatıcı tahmin ediyor: ölçüldü, hls.js'te 1,4 sn, Media3'te
+            # ~0,7 sn erken. Bölüme özgü, her yeni bölümde yeniden okunur.
+            proxy.vtt_pts = _video_first_pts(net, merged)
         subs_local = proxy.virtual(build_subs_playlist(vtt), "m3u8")
         subtitle = (subs_local, "Türkçe", "tr")
 
@@ -256,6 +398,7 @@ def watch(session: SessionState, net: Network, merged, title: str,
 
     proxy = HLSProxy(session, merged.video_referer).start()
     local_master, n_aud, has_sub = _build_watch_master(proxy, net, session, merged)
+    _start_subsync(proxy, session, merged)
     if on_progress is not None:
         proxy.progress_cb = on_progress
 
@@ -267,6 +410,7 @@ def watch(session: SessionState, net: Network, merged, title: str,
             if not nxt:
                 return None
             src2, _, _ = _build_watch_master(proxy, net, session, nxt["merged"])
+            _start_subsync(proxy, session, nxt["merged"])   # kayma bölüme özgü
             return {"src": src2, "title": nxt["title"],
                     "hasNext": bool(nxt["has_next"])}
         proxy.next_handler = _next_handler
@@ -317,16 +461,56 @@ def download(session: SessionState, net: Network, merged, title: str,
     from hayalet.core.proxy import HLSProxy
     proxy = HLSProxy(session, merged.video_referer).start()
 
-    # Türkçe altyazıyı yerel dosyaya indir (aynı ffmpeg geçişinde gömülür)
+    # Türkçe altyazıyı yerel dosyaya indir (aynı ffmpeg geçişinde gömülür).
+    # Birkaç kez deneniyor: altyazılar ayrı bir CDN'de duruyor ve o hostlar
+    # ARALIKLI kesiliyor (ölçüldü: aynı adres bir denemede TLS el sıkışmasında
+    # reset, biraz sonra sorunsuz). Hata SESSİZCE yutulmamalı — eskiden öyleydi
+    # ve kullanıcı altyazısız indirdiğini fark etmiyordu.
     sub_path: Path | None = None
+    sub_text = ""
     if merged.subtitle_url:
-        try:
-            sub_path = config.CACHE_DIR / f"{safe}.tr.vtt"
-            sub_path.parent.mkdir(parents=True, exist_ok=True)
-            sub_path.write_bytes(net.get(
-                merged.subtitle_url, referer=merged.subtitle_referer).content)
-        except Exception:
-            sub_path = None
+        son_hata: Exception | None = None
+        for _ in range(3):
+            try:
+                raw = net.get(merged.subtitle_url,
+                              referer=merged.subtitle_referer).content
+                sub_path = config.CACHE_DIR / f"{safe}.tr.vtt"
+                sub_path.parent.mkdir(parents=True, exist_ok=True)
+                sub_path.write_bytes(raw)
+                sub_text = raw.decode("utf-8", "replace")
+                break
+            except Exception as e:
+                son_hata, sub_path = e, None
+        if sub_path is None:
+            _say(progress, "[!] Altyazı indirilemedi, ALTYAZISIZ devam ediliyor "
+                           f"({type(son_hata).__name__}).")
+            logs.log.warning("altyazı indirilemedi: %s | %s",
+                             merged.subtitle_url, son_hata)
+
+    # Altyazı-ses hizalaması indirmeyle PARALEL ölçülür (bkz. core/subsync.py).
+    # Önüne konsaydı her indirmeye ~70 sn eklerdi; paralel çalışınca ölçülen
+    # olağan durumda (altyazı zaten hizalı) ek maliyet SIFIR, yalnız gerçek bir
+    # kayma bulunursa sonunda altyazı yeniden mux'lanıyor.
+    sync_sonuc: dict = {}
+    sync_thread: threading.Thread | None = None
+    if sub_text and merged.audios:
+        hiza_ses = next((a for a in merged.audios if not a.is_turkish),
+                        merged.audios[0])
+
+        def _olc() -> None:
+            try:
+                aurl = proxy.proxied(hiza_ses.url, "m3u8",
+                                     referer=hiza_ses.referer)
+                pr = subprocess.run(subsync.probe_cmd(ff, aurl),
+                                    capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace",
+                                    timeout=900)
+                sync_sonuc["r"] = subsync.analyze(pr.stderr, sub_text)
+            except Exception as e:                  # ölçüm asla indirmeyi bozmaz
+                logs.log.info("altyazı hizalama ölçümü atlandı: %s", e)
+
+        sync_thread = threading.Thread(target=_olc, daemon=True)
+        sync_thread.start()
 
     # Video girişi: master m3u8 birden çok kalite içeriyorsa ffmpeg VARSAYILAN
     # olarak İLK varyantı seçer — bu, bazı sitelerde (ör. hdfilmcehennemi) en
@@ -343,6 +527,7 @@ def download(session: SessionState, net: Network, merged, title: str,
         pass
 
     out_file = out_dir / f"{safe}.mp4"
+    rc = 1                      # finally'de tanımsız kalmasın (hizalama beklemesi)
     try:
         # input 0 = video (en yüksek kalite varyantı), sonra her ses kaynağı ayrı giriş
         cmd = [ff, "-y", "-allowed_extensions", "ALL", "-i",
@@ -384,7 +569,11 @@ def download(session: SessionState, net: Network, merged, title: str,
         # sonraki çalıştırmada "zaten indirilmiş" sanılıp yanlışlıkla atlanmasın diye
         # (bkz. cli._existing_file / actions.is_complete_download).
         tmp_file = out_file.with_name(out_file.name + ".part")
-        cmd += [str(tmp_file)]
+        # ffmpeg konteyneri DOSYA UZANTISINDAN seçer. Geçici ad ".part" ile
+        # bittiği için seçemiyor ("Unable to choose an output format") ve
+        # indirme daha başlamadan ölüyordu. Formatı elle vermek şart.
+        cmd += ["-f", _CONTAINER.get(out_file.suffix.lower(), "matroska"),
+                str(tmp_file)]
         info = f"({len(merged.audios)} ses, altyazı {'var' if sub_path else 'yok'})"
         err = ""
         if progress is not None and task_id is not None:
@@ -406,6 +595,11 @@ def download(session: SessionState, net: Network, merged, title: str,
             print(f"[⬇] İndiriliyor: {out_file.name}  {info}")
             rc = subprocess.run(cmd).returncode
     finally:
+        # Ölçüm proxy üzerinden ses okuyor: proxy'yi durdurmadan önce bitmesini
+        # bekle. Yalnız indirme başarılıysa beklenir; başarısızsa düzeltilecek
+        # bir dosya zaten yok.
+        if sync_thread is not None and rc == 0:
+            sync_thread.join(timeout=_SYNC_JOIN_S)
         proxy.stop()
         if sub_path:
             try:
@@ -424,6 +618,11 @@ def download(session: SessionState, net: Network, merged, title: str,
         _say(progress, f"[✔] Tamamlandı: {out_file.name}")
         logs.log.info("download ok: %s (%d ses, altyazı=%s)",
                       out_file.name, len(merged.audios), bool(sub_path))
+        res = sync_sonuc.get("r")
+        if res is not None:
+            logs.log.info("altyazı hizalama: %s", res.reason)
+            if res.apply:
+                _shift_embedded_sub(ff, out_file, sub_text, res, progress)
     else:
         tmp_file.unlink(missing_ok=True)        # yarım/bozuk .part → sonraki taramada görünmesin
         _say(progress, f"[!] İndirme başarısız (ffmpeg kodu {rc}).")

@@ -144,6 +144,13 @@ def is_movie(series: "Series") -> bool:
 
 
 # --- Bölümler -------------------------------------------------------------
+def _abs(link: str, session: SessionState) -> str:
+    """Göreli bölüm linkini mutlak URL'ye çevirir."""
+    if link.startswith("http"):
+        return link
+    return session.base_url + ("" if link.startswith("/") else "/") + link
+
+
 def get_episodes(net: Network, session: SessionState, series: Series) -> list[Episode]:
     if is_movie(series):
         # Movie'lerde /bolum/ alt sayfası yok — kaynak (data-rm-k) doğrudan
@@ -153,12 +160,26 @@ def get_episodes(net: Network, session: SessionState, series: Series) -> list[Ep
 
     html = net.get(series.url(session.base_url), referer=session.base_url).text
 
-    # Tüm /bolum/ linklerini topla
+    seen: set[str] = set()
+    episodes: list[Episode] = []
+
+    # YENİ biçim (2026-10): /dizi/<slug>/3-sezon/7-bolum — sezon/bölüm yolda.
+    for link, sez, bol in re.findall(config.SELECTORS["bolum_link_sezon"],
+                                     html, re.I):
+        url = _abs(link, session)
+        if url in seen:
+            continue
+        seen.add(url)
+        episodes.append(Episode(season=int(sez), number=int(bol), url=url))
+
+    if episodes:
+        episodes.sort(key=lambda e: (e.season, e.number))
+        return episodes
+
+    # ESKİ biçim: /bolum/<slug>-3x7 (site geri dönerse diye duruyor)
     links = re.findall(r'href="([^"]*?/bolum/[a-z0-9\-]+)"', html, re.I)
     sxe_re = re.compile(config.SELECTORS["sxe_from_slug"], re.I)
 
-    seen: set[str] = set()
-    episodes: list[Episode] = []
     for link in links:
         url = link if link.startswith("http") else session.base_url + \
             ("" if link.startswith("/") else "/") + link

@@ -8,7 +8,7 @@ from pathlib import Path
 
 # --- Domain ---------------------------------------------------------------
 # Son bilinen domain; resolver bunu doğrular/override eder.
-KNOWN_DOMAIN = "https://dizipal1574.com"
+KNOWN_DOMAIN = "https://dizipal1822.com"
 
 # Güncel domaini veren yönlendirme kaynakları (resolver adımında doldurulacak).
 RESOLVER_SOURCES: list[str] = []
@@ -72,8 +72,13 @@ RMK_KEYSIZE = 32   # 256-bit
 # --- HTML seçiciler / kalıplar (canlı incelemede doğrulandı) --------------
 SELECTORS = {
     "rmk_block": r'data-rm-k="true">(\{.*?\})</div>',   # şifreli kaynak JSON
-    "bolum_link": r'/bolum/[a-z0-9\-]+',                 # bölüm URL kalıbı
+    "bolum_link": r'/bolum/[a-z0-9\-]+',                 # ESKİ bölüm URL kalıbı
     "sxe_from_slug": r'-(\d+)x(\d+)(?:-c\d+)?$',         # slug -> (sezon, bölüm)
+    # YENİ biçim (2026-10): /dizi/<slug>/3-sezon/7-bolum. Site eski
+    # /bolum/<slug>-3x7 şemasını bıraktı; sezon/bölüm artık yolun kendisinde.
+    # Eski kalıp yerinde duruyor, catalog.get_episodes yeni biçim boş gelirse
+    # ona düşüyor.
+    "bolum_link_sezon": r'href="([^"]*?/dizi/[a-z0-9\-]+/(\d+)-sezon/(\d+)-bolum)"',
 }
 
 # --- Reklam kara listesi (örnek eklentiden birebir) -----------------------

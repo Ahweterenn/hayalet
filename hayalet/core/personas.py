@@ -1,7 +1,7 @@
 """Cihaz/tarayıcı kimliği havuzu — her çalıştırmada rastgele biri seçilir.
 
 Amaç: bu aracı çalıştıran herkesin sabit, tek bir User-Agent + TLS imzası
-göndermesini önlemek (bkz. yapılcaklar.txt "ban önlemi"). Her girdide
+göndermesini önlemek (bkz. CLAUDE.md "Anti-detection posture"). Her girdide
 impersonate profili ile User-Agent aynı tarayıcı/cihaz ailesinden — tutarsız
 bir kombinasyon (ör. iPhone UA + masaüstü Chrome TLS imzası) gerçek bir
 cihazdan daha şüpheli görünür, o yüzden ikisi birlikte tanımlanır.

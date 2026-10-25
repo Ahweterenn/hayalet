@@ -189,3 +189,17 @@ def test_resolve_uses_cache_without_scanning(monkeypatch, world):
 
     monkeypatch.setattr(resolver, "_scan_reachable", boom)
     assert resolver.resolve(net, session) == cached
+
+
+def test_resolve_seeds_scan_from_stale_cache(monkeypatch, world):
+    """TTL'i geçmiş önbellek kaydı, taramanın BAŞLANGICI olmalı.
+
+    Yaşandı: KNOWN_DOMAIN üç ay önce 1574'e sabitlenmişti, site 1822'ye
+    gelmişti. Kullanıcı bir gün ara verdi, 6 saatlik TTL doldu, kayıt çöpe
+    gitti ve tarama 1574'ten başlayıp domaini bulamadı — oysa dünkü kayıt
+    elimizdeki en iyi tohumdu.
+    """
+    live = "https://dizipal1706.com"          # eski pencerenin (1561+24) çok ötesi
+    net, session = world({live: _home(canonical=live)}, {live})
+    monkeypatch.setattr(resolver, "_stale", lambda: ("https://dizipal1700.com", 1.0))
+    assert resolver.resolve(net, session) == live
