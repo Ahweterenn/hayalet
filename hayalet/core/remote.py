@@ -29,7 +29,7 @@ import time
 # ayar KAPALIDIR ve her şey gömülü varsayılanlarla çalışır (bugünkü davranış).
 # Örnek (GitHub Gist):
 #   https://gist.githubusercontent.com/<kullanici>/<gist_id>/raw/remote_config.json
-REMOTE_CONFIG_URL = ""
+REMOTE_CONFIG_URL = "https://gist.githubusercontent.com/Ahweterenn/96f95474dd50740ee8b180e00fc99e1a/raw/remote_config.json"
 
 _TTL = 3 * 3600          # taze sayılma süresi; sonra arka planda tazelenir
 _CACHE_NAME = "remote_config.json"
