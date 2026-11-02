@@ -319,6 +319,21 @@ MIN_KEEP = 6
 WEAK_LIMIT = 5
 
 
+def _year_of(r) -> int:
+    """Sonuçtan 4 haneli yıl; yoksa 9999 (yılsız olanlar sona)."""
+    m = re.search(r"(?:19|20)\d{2}", str(getattr(r, "year", "") or ""))
+    return int(m.group(0)) if m else 9999
+
+
+def _chrono(pairs: list) -> list:
+    """(puan, sonuç) çiftlerini puan KOVASINA göre azalan, aynı kovada YILA göre
+    artan sıralar → aynı serinin/franchise'ın filmleri ilkten sona dizilir
+    (hepsi sorguyu içerdiği için puanları birbirine yakın, yıl belirleyici olur).
+    Puan 0.1'lik kovalara yuvarlanır ki alaka sırası korunurken yıl tiebreaker
+    olsun."""
+    return [r for _, r in sorted(pairs, key=lambda p: (-round(p[0], 1), _year_of(p[1])))]
+
+
 def rank(query: str, results: list, min_score: float = MIN_SCORE,
          key=lambda r: r.name) -> list:
     """Sonuçları sorguya benzerliğe göre sıralar; eşiğin altını atar.
@@ -346,7 +361,7 @@ def rank(query: str, results: list, min_score: float = MIN_SCORE,
         n = sum(1 for s, _ in kept if s >= floor)
         kept = kept[:max(n, MIN_KEEP)]
 
-    return [r for _, r in kept] or [r for _, r in scored[:WEAK_LIMIT]]
+    return _chrono(kept) or _chrono(list(scored[:WEAK_LIMIT]))
 
 
 def best_score(query: str, results: list, key=lambda r: r.name) -> float:

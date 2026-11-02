@@ -249,7 +249,9 @@ export class Player {
         this.onChange();
     }
 
-    load(url, subtitles = [], { startTime = 0, autoplay = false, onReady = null } = {}) {
+    // `resolved`: adres hayalet'in kendi çıkarıcısından geldi, yani kesin video.
+    // Adrese bakmak yetmiyor: rapidvid'in HLS adreslerinde uzantı yok (/mi/DKy...).
+    load(url, subtitles = [], { startTime = 0, autoplay = false, onReady = null, resolved = false } = {}) {
         if (!url) return this.clear();
         const token = ++this.loadToken;
         this._teardown();
@@ -273,9 +275,11 @@ export class Player {
             this.mode = 'youtube';
             this.root.classList.add('is-yt');
             this._loadYouTube(url, startTime, autoplay, ready);
-        } else if (isMedia(url)) {
+        } else if (resolved || isMedia(url)) {
             this.mode = 'html5';
-            this._loadMedia(url, subtitles, ready);
+            // Çıkarıcıdan gelen adres dosya uzantısı taşımıyorsa HLS'tir.
+            const hlsStream = /m3u8/i.test(url) || (resolved && !/\.(mp4|webm|ogg)($|\?)/i.test(url));
+            this._loadMedia(url, subtitles, ready, hlsStream);
         } else {
             // Oynatıcı olmayan sayfa: gösterilir ama senkronlanamaz.
             this.mode = 'iframe';
@@ -335,14 +339,17 @@ export class Player {
             });
     }
 
-    _loadMedia(url, subtitles, ready) {
+    _loadMedia(url, subtitles, ready, hlsStream) {
         if (this.native) {
-            this.video.open(new URL(this.proxyUrl(url), location.href).href, this._nativeSubs(subtitles), ready);
+            const nativeUrl = new URL(this.proxyUrl(url), location.href);
+            // OdaVideo türü adresteki "m3u8" yazısından anlar; proxy bu parametreyi okumaz.
+            if (hlsStream) nativeUrl.searchParams.set('tur', 'm3u8');
+            this.video.open(nativeUrl.href, this._nativeSubs(subtitles), ready);
             if (store.get('oda.subOff') === '1') this.app.nvSub('off');
             return;
         }
         const src = this.proxyUrl(url);
-        if (/m3u8/i.test(url) && window.Hls && Hls.isSupported()) {
+        if (hlsStream && window.Hls && Hls.isSupported()) {
             const mobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
             const player = this;
             const Base = Hls.DefaultConfig.loader;

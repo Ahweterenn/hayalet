@@ -38,6 +38,11 @@ class MergedStream:
     audios: list[AudioSource]
     subtitle_url: str | None = None
     subtitle_referer: str | None = None
+    # Kaynak türü: "hls" (varsayılan, m3u8 → hls.js/proxy/variant zinciri) ya da
+    # "file" (düz progressive dosya, ör. anime fansub MP4'ü). "file"de altyazı/ses
+    # kanalı/variant yoktur; CDN genelde açıktır → tarayıcı native oynatır, indirme
+    # ffmpeg ile doğrudan kopyalar. Bkz. actions._build_watch_master / download.
+    kind: str = "hls"
 
 
 def _resolve(net, session, bolum_url):
@@ -229,6 +234,23 @@ def probe_video(net: Network, master_url: str, referer: str | None,
     return False, "playlist zinciri fazla derin"
 
 
+def build_stream(net: Network, session: SessionState,
+                 episode: Episode, series: Series) -> MergedStream:
+    """Yeni sitede dublaj ayrı kayıt değil: seçilen sayfanın kaynak listesinde
+    duruyor ve çoğu yapımda Türkçe ses zaten aynı akışın içinde. Dublaj sayfası
+    yalnız akışta Türkçe ses yoksa çözülür; aynı oynatıcıya çıkarsa (ölçüldü:
+    Sherlock) ikinci kez eklenmez. Eski sayfa çıkarsa build_merged'e düşülür.
+    """
+    tek = _resolve(net, session, episode.url)
+    if not tek or tek[0].dub_url is None:       # "" = yeni sayfa, dublajı yok
+        return build_merged(net, session, episode, series)
+    dub = None
+    if tek[0].dub_url and not any(t.is_turkish for t in tek[2]):
+        d = _resolve(net, session, tek[0].dub_url)
+        dub = d if d and d[0].referer != tek[0].referer else None
+    return _assemble(net, session, episode, tek, dub)
+
+
 def build_merged(net: Network, session: SessionState,
                  episode: Episode, series: Series) -> MergedStream:
     # Sürümleri sınıflandır; karşı sürümün bölümü çözüm sırasında bulunur
@@ -242,7 +264,11 @@ def build_merged(net: Network, session: SessionState,
         orig, dub = _resolve_both(net, session, karsi, episode.url)
     else:
         orig, dub = _resolve_both(net, session, episode.url, karsi)
+    return _assemble(net, session, episode, orig, dub)
 
+
+def _assemble(net: Network, session: SessionState, episode: Episode,
+              orig, dub) -> MergedStream:
     if not orig and not dub:
         # Seçilen kaynağı doğrudan çözmeyi dene → anlamlı hata yükselsin
         extractor.extract_stream(net, session, episode.url)

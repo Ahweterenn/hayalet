@@ -6,7 +6,7 @@ from urllib.parse import urljoin
 
 import m3u8
 
-from hayalet.core.network import Network
+from hayalet.core.network import Network, media_headers
 from hayalet.core.session import SessionState
 
 
@@ -36,7 +36,7 @@ class AudioTrack:
 
 def list_variants(net: Network, session: SessionState, m3u8_url: str,
                   referer: str) -> list[Variant]:
-    text = net.get(m3u8_url, referer=referer).text
+    text = net.get(m3u8_url, referer=referer, headers=media_headers(referer)).text
     pl = m3u8.loads(text, uri=m3u8_url)
     if not pl.playlists:
         return []   # media playlist (tek kalite)
@@ -86,7 +86,7 @@ def get_av_urls(net: Network, session: SessionState, master_url: str,
     from urllib.parse import urljoin
     from hayalet.core.utils import looks_turkish
 
-    text = net.get(master_url, referer=referer).text
+    text = net.get(master_url, referer=referer, headers=media_headers(referer)).text
     pl = m3u8.loads(text, uri=master_url)
 
     # --- Video varyantı ---

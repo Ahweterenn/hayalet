@@ -29,7 +29,11 @@ def setup() -> logging.Logger:
         handler.setFormatter(logging.Formatter(
             "%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S"))
         log.addHandler(handler)
-        log.setLevel(logging.INFO)
+        # Varsayılan INFO: ayrıntılı "HayaletDebug" izleri (verify adımları vb.)
+        # kullanıcıya/terminale gitmez. Geliştirici görmek isterse HAYALET_DEBUG=1
+        # ortam değişkeniyle DEBUG'a çeker (yine yalnız dosyaya yazılır).
+        import os
+        log.setLevel(logging.DEBUG if os.environ.get("HAYALET_DEBUG") else logging.INFO)
         log.propagate = False       # kök logger'a (dolayısıyla terminale) sızmasın
     except Exception:
         pass

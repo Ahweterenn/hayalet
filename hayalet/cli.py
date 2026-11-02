@@ -48,6 +48,7 @@ def _banner():
     title.append("  ▎", style="bright_red")
     title.append("hayalet", style="bold bright_white")
     title.append("  tarayıcısız dizi/film aracı", style="dim")
+    title.append(f"   {len(SITES)} site", style="bright_red")
     console.print(Panel(title, border_style="bright_red", padding=(0, 1)))
 
 
@@ -596,6 +597,12 @@ def run_cli(net, session, args, adapter):
                 return
 
     if args.action == "extract":
+        # Düz dosya kaynağı (ör. anime fansub MP4'ü): m3u8 değil → variant
+        # ayrıştırılmaz, doğrudan adres verilir.
+        if getattr(merged, "kind", "hls") == "file":
+            console.print(f"[green]düz dosya (mp4):[/] {merged.video_master_url}")
+            console.print(f"[green]referer:[/] {merged.video_referer}")
+            return
         variants = m3u8_parser.list_variants(net, session, merged.video_master_url,
                                              merged.video_referer)
         v = choose_variant(variants, args.quality or prefs.load().get("quality", "best")) \
@@ -995,6 +1002,11 @@ def main():
 
     except KeyboardInterrupt:
         console.print("\n[dim]İptal edildi.[/]")
+    except Exception:
+        # Beklenmedik hata: kullanıcıya çıplak traceback gösterme; ayrıntı log'a.
+        logs.log.exception("beklenmedik hata (main)")
+        console.print("[red]✕ Beklenmedik bir hata oluştu.[/] "
+                      "[dim](ayrıntı: .cache/hayalet.log)[/]")
     finally:
         for net in nets:
             net.close()

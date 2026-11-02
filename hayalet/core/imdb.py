@@ -226,12 +226,22 @@ def lookup(name: str, year=None, movie: bool | None = None) -> dict | None:
 # --- popüler listeler --------------------------------------------------------------
 _CHART_Q = """{ chartTitles(first:%d, chart:{chartType:%s}){edges{node{
   id titleText{text} originalTitleText{text} releaseYear{year}
-  ratingsSummary{aggregateRating} primaryImage{url} titleType{id} }}} }"""
+  ratingsSummary{aggregateRating} primaryImage{url} titleType{id}
+  genres{genres{text}} }}} }"""
+
+# Tür-bazlı kategori rafları için çekilen chart'lar: popüler + en çok oy alan.
+# chartType IMDb GraphQL enum'ları (advancedTitleSearch'e gerek yok, bunlar
+# anahtarsız/hesapsız çalışıyor).
+_CHARTS = {
+    "most_popular": {"movie": "MOST_POPULAR_MOVIES", "tv": "MOST_POPULAR_TV_SHOWS"},
+    "top_rated": {"movie": "TOP_RATED_MOVIES", "tv": "TOP_RATED_TV_SHOWS"},
+}
 
 
-def popular(kind: str = "movie", n: int = 20) -> list[dict]:
-    """IMDb'nin "en popüler" listesi (`kind`: movie | tv)."""
-    chart = "MOST_POPULAR_MOVIES" if kind == "movie" else "MOST_POPULAR_TV_SHOWS"
+def popular(kind: str = "movie", n: int = 20, chart: str | None = None) -> list[dict]:
+    """IMDb chart listesi. `kind`: movie | tv. `chart`: chartType adı (verilmezse
+    "en popüler"); her kayıt Türkçe `genres` taşır (kategori kovalaması için)."""
+    chart = chart or _CHARTS["most_popular"][kind if kind in ("movie", "tv") else "movie"]
 
     def work():
         edges = ((_gql(_CHART_Q % (max(1, min(n, 50)), chart)).get("chartTitles") or {})
@@ -239,6 +249,7 @@ def popular(kind: str = "movie", n: int = 20) -> list[dict]:
         out = []
         for e in edges:
             t = e.get("node") or {}
+            gl = [g.get("text", "") for g in ((t.get("genres") or {}).get("genres") or [])]
             out.append({
                 "id": t.get("id", ""),
                 "title": (t.get("titleText") or {}).get("text", ""),
@@ -247,6 +258,7 @@ def popular(kind: str = "movie", n: int = 20) -> list[dict]:
                 "rating": (t.get("ratingsSummary") or {}).get("aggregateRating"),
                 "poster": sized((t.get("primaryImage") or {}).get("url", "")),
                 "movie": (t.get("titleType") or {}).get("id", "") in _MOVIE_TYPES,
+                "genres": [GENRES_TR.get(g, g) for g in gl if g],
             })
         return out
     return _cached(f"chart:{chart}:{n}", work)

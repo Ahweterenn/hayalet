@@ -1,0 +1,13 @@
+{
+  "_aciklama": "APK yayinlamadan site duzeltme dosyasi. Bunu HERKESE ACIK bir yere koy (ornek: GitHub Gist), ham (raw) adresini hayalet/core/remote.py icindeki REMOTE_CONFIG_URL'e yaz. Bir site bozulunca ilgili anahtari burada guncelle; tum kullanicilar bir sonraki acilista duzelir. Anahtar YOKSA uygulama gomulu varsayilani kullanir (bugunku davranis). Bu satiri ('_aciklama') silmek zorunda degilsin, bilinmeyen anahtarlar yok sayilir.",
+
+  "selcukflix.key_seed": "!!22xx!!90!!",
+
+  "animecix.known_domain": "https://animecix.tv",
+  "dizibox.known_domain": "https://www.dizibox.live",
+  "dizimay.known_domain": "https://dizimay.pro",
+  "yabancidizi.known_domain": "https://yabancidizi.news",
+  "asyawatch.known_domain": "https://asyawatch.com",
+  "selcukflix.known_domain": "https://selcukflix.app",
+  "webdramaturkey.known_domain": "https://webdramaturkey2.com"
+}

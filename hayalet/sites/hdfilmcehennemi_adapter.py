@@ -670,10 +670,12 @@ class HDFCAdapter:
         if not video_ids:
             # Site yeni filmleri kaynak yüklenmeden listeliyor: kaynak menüsü
             # boş, sayfada yalnız fragman var (ölçüldü 2026-10-04: Resident Evil 2026).
+            # Dizilerde de oluyor: bazılarının bölümleri listede ama videosu yok
+            # (ölçüldü 2026-11-01: The Last of Us, Game of Thrones).
             if re.search(r'<nav class="video-alternatives">\s*</nav>', page):
-                raise ExtractError("Bu yapım sitede henüz izlenemiyor: kaynak "
-                                   "eklenmemiş, yalnız fragman var (büyük "
-                                   "ihtimalle hâlâ vizyonda).")
+                raise ExtractError("Bu yapımın sitede videosu yok: kaynak "
+                                   "eklenmemiş ya da kaldırılmış. Başka bir "
+                                   "siteden açmayı dene.")
             raise ExtractError("hdfilmcehennemi: kaynak butonu (data-video) bulunamadı.")
 
         embed_url = None

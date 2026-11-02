@@ -19,25 +19,87 @@ _STYLE = questionary.Style([
 _TYPE_TR = {"series": "Dizi", "movies": "Film", "movie": "Film", "film": "Film"}
 
 
+def _mouse_select(header: str, items: list, default=None):
+    """FARE tıklaması + klavye (ok/Enter) ile tek seçim. `items`: [(değer, etiket)].
+    Seçilen değeri döndürür; Esc/Ctrl-C → None.
+
+    prompt_toolkit'in RadioList'i mouse destekler (tıklayınca `_handle_enter`);
+    onu seç+gönder olacak şekilde override ediyoruz. Fare terminale bağlıdır ve
+    bu ortamda test edilemez → çağıran yeri try/except ile sarmalayıp sorun
+    çıkarsa klasik klavye menüsüne (questionary) düşürüyoruz."""
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import HSplit, Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style as _PTStyle
+    from prompt_toolkit.widgets import RadioList
+
+    picked = {"v": None, "done": False}
+
+    class _Pick(RadioList):
+        def _handle_enter(self):              # Enter VE fare tıklaması buraya gelir
+            super()._handle_enter()
+            picked["v"], picked["done"] = self.current_value, True
+            app.exit()
+
+    rl = _Pick(values=[(v, lbl) for v, lbl in items])
+    if default is not None:
+        try:
+            rl._selected_index = [v for v, _ in items].index(default)
+            rl.current_value = default
+        except ValueError:
+            pass
+
+    kb = KeyBindings()
+
+    @kb.add("c-c")
+    @kb.add("escape")
+    def _iptal(e):
+        app.exit()
+
+    head = Window(FormattedTextControl([("class:qmark", "? "), ("", header)]),
+                  height=1, dont_extend_height=True)
+    app = Application(
+        layout=Layout(HSplit([head, rl])),
+        key_bindings=kb, mouse_support=True, full_screen=False,
+        style=_PTStyle([("qmark", "fg:#ff3130 bold"),
+                        ("radio-selected", "fg:#ff3130 bold"),
+                        ("radio-checked", "fg:#ff3130 bold"),
+                        ("radio", "")]),
+    )
+    app.run()
+    return picked["v"] if picked["done"] else None
+
+
 def _type_tr(t: str) -> str:
     """Ham tür etiketini Türkçeleştirir (Series→Dizi, Movies/Film→Film)."""
     return _TYPE_TR.get((t or "").lower(), t or "")
 
 
 def prompt_resume_series(resume: dict) -> Series | None:
-    """Kayıtlı 'kaldığın yerden devam' işaretini onaylatır; onaylanırsa Series döner
-    (arama yapılmadan, kayıtlı slug'dan doğrudan kurulur)."""
+    """Kayıtlı 'kaldığın yerden devam' kaydı için seçim sunar: devam et / yeni
+    arama / son izleneni sil. Devam seçilirse Series döner (arama yapılmadan,
+    kayıtlı slug'dan kurulur); 'sil' seçilirse kayıt silinir ve None döner."""
+    from hayalet.core import prefs
     label = f"{resume['series_name']} · S{int(resume['season']):02d}E{int(resume['episode']):02d}"
     position = float(resume.get("position") or 0)
     if position >= 20:
         label += f"  ({int(position) // 60:02d}:{int(position) % 60:02d})"
-    ok = questionary.confirm(f"Kaldığın yerden devam et: {label}?",
-                             default=True, style=_STYLE).ask()
-    if not ok:
-        return None
-    return Series(name=resume["series_name"], slug=resume["series_slug"],
-                 type=resume.get("series_type", "Series"),
-                 site=resume.get("site", "dizipal"))
+    choice = questionary.select(
+        "Kaldığın yer:",
+        choices=[
+            questionary.Choice(f"▶  Devam et  —  {label}", "resume"),
+            questionary.Choice("🔍  Yeni arama", "search"),
+            questionary.Choice("🗑  Son izleneni sil", "delete"),
+        ], style=_STYLE).ask()
+    if choice == "resume":
+        return Series(name=resume["series_name"], slug=resume["series_slug"],
+                      type=resume.get("series_type", "Series"),
+                      site=resume.get("site", "dizipal"))
+    if choice == "delete":
+        prefs.forget_resume()
+        _console.print("[green]✓[/] Son izlenen kaydı silindi.")
+    return None
 
 
 def _series_label(r: Series, show_site: bool) -> str:
@@ -69,9 +131,15 @@ def prompt_search_series(contexts: dict) -> Series | None:
                 continue
             results = suggestions
             header = "Sonuç yok. Şunu mu demek istediniz?"
-        choices = [questionary.Choice(_series_label(r, show_site), value=r) for r in results]
-        choices.append(questionary.Choice("↩ Yeniden ara", value="__again__"))
-        pick = questionary.select(header, choices=choices, style=_STYLE).ask()
+        items = [(r, _series_label(r, show_site)) for r in results]
+        items.append(("__again__", "↩ Yeniden ara"))
+        # Fare + klavye seçim; herhangi bir sorunda (TTY yok, terminal faresiz…)
+        # klasik klavye menüsüne düş.
+        try:
+            pick = _mouse_select(header, items)
+        except Exception:
+            choices = [questionary.Choice(lbl, value=v) for v, lbl in items]
+            pick = questionary.select(header, choices=choices, style=_STYLE).ask()
         if pick is None:
             return None
         if pick == "__again__":

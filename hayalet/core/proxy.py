@@ -646,6 +646,14 @@ addRow(SUBBG_L[k],null,subBg===k,function(){subBg=k;localStorage.setItem('subbg'
 function loadStream(source){
 if(h){try{h.destroy();}catch(e){}h=null;}
 resetSubSync();   // kayma bölüme özgü: yeni bölümde baştan ölçülür
+// Düz progressive dosya (ör. anime fansub MP4'ü): HLS değil → hls.js'i atla,
+// doğrudan native <video> ile oynat. Ayrı altyazı/kalite kanalı yok → gear gizli.
+if(/\\.mp4(\\?|$)/i.test(source)){
+v.src=source;
+v.play().catch(function(){});
+gear.classList.add('hidden');
+return;
+}
 if(window.Hls&&Hls.isSupported()){
 // renderTextTracksNatively:true → cue'lar native TextTrack'lere yazılır (bize
 // activeCues verir, hls.js kendi <div> altyazı katmanını OLUŞTURMAZ). Ardından

@@ -23,6 +23,7 @@ class StreamInfo:
     m3u8_url: str
     subtitle_url: str | None
     referer: str          # m3u8/proxy/ffmpeg için kullanılacak referer (iframe origin)
+    dub_url: str | None = None   # dublaj sayfası; "" = yeni sayfa ama yok, None = eski sayfa
 
 
 class ExtractError(Exception):
@@ -61,13 +62,62 @@ def _abs_url(url: str) -> str:
     return url
 
 
-def extract_stream(net: Network, session: SessionState, bolum_url: str) -> StreamInfo:
-    # 1) Bölüm sayfası -> data-rm-k -> iframe URL ------------------------
-    bhtml = net.get(bolum_url, referer=session.base_url).text
-    m = re.search(config.SELECTORS["rmk_block"], bhtml, re.S)
+def _page_player(html: str) -> dict | None:
+    """Yeni sitenin (Next.js) sayfa verisindeki `player` nesnesi.
+
+    Veri HTML'de değil, parça parça `self.__next_f.push([1,"..."])` içinde kaçışlı
+    metin olarak geliyor; önce birleştirilir, nesne sonra okunur. Eski sayfada
+    bu yapı olmadığı için None döner.
+    """
+    parts = re.findall(r'self\.__next_f\.push\(\[1,"((?:[^"\\]|\\.)*)"\]\)', html)
+    try:
+        flat = "".join(json.loads(f'"{p}"') for p in parts)
+        at = flat.find('"player":{')
+        if at < 0:
+            return None
+        player, _ = json.JSONDecoder().raw_decode(flat, at + len('"player":'))
+    except ValueError:
+        return None
+    return player if isinstance(player, dict) else None
+
+
+def _dub_page(player: dict, session: SessionState) -> str:
+    """Kaynak listesinde seçili olmayan dublaj sürümünün tam adresi ("" = yok)."""
+    for s in player.get("sources") or []:
+        if s.get("dub") and not s.get("on") and s.get("href"):
+            return session.base_url + s["href"]
+    return ""
+
+
+def _np_config(html: str) -> dict | None:
+    """Yeni oynatıcının `window.NP_CONFIG = {...}` ayarı (yoksa None)."""
+    m = re.search(r"window\.NP_CONFIG\s*=\s*", html)
     if not m:
-        raise ExtractError("Şifreli kaynak (data-rm-k) bulunamadı.")
-    iframe_url = _abs_url(utils.decrypt_rmk(m.group(1)))
+        return None
+    try:
+        return json.JSONDecoder().raw_decode(html, m.end())[0]
+    except ValueError:
+        return None
+
+
+def extract_stream(net: Network, session: SessionState, bolum_url: str) -> StreamInfo:
+    # 1) Bölüm sayfası -> şifreli kaynak -> iframe URL --------------------
+    bhtml = net.get(bolum_url, referer=session.base_url).text
+    player = _page_player(bhtml)
+    dub_url = None
+    if player is not None:
+        enc = player.get("enc")
+        if not enc:
+            raise ExtractError("Bu sayfada oynatılabilir kaynak yok "
+                               f"({player.get('error') or player.get('gate') or 'kaynak boş'}).")
+        iframe_url = _abs_url(utils.decrypt_rmk(
+            json.dumps(enc), player.get("k") or None))
+        dub_url = _dub_page(player, session)
+    else:
+        m = re.search(config.SELECTORS["rmk_block"], bhtml, re.S)
+        if not m:
+            raise ExtractError("Şifreli kaynak (data-rm-k) bulunamadı.")
+        iframe_url = _abs_url(utils.decrypt_rmk(m.group(1)))
     if "http" not in iframe_url:
         raise ExtractError(f"Çözülen değer URL değil: {iframe_url[:60]}")
 
@@ -75,6 +125,16 @@ def extract_stream(net: Network, session: SessionState, bolum_url: str) -> Strea
 
     # 2) iframe -> playList + TR altyazı --------------------------------
     ihtml = net.get(iframe_url, referer=bolum_url).text
+
+    np_cfg = _np_config(ihtml)
+    if np_cfg is not None:
+        sources = np_cfg.get("sources") or []
+        if not sources or not sources[0].get("master"):
+            raise ExtractError("Oynatıcı ayarlarında kaynak yok.")
+        subs = np_cfg.get("subtitles") or []
+        tr_sub = next((s.get("url") for s in subs
+                       if s.get("lang") == "tr" and not s.get("forced")), None)
+        return StreamInfo(sources[0]["master"], tr_sub, iframe_url, dub_url)
 
     mp = re.search(r"openPlayer\('([^']+)'", ihtml)
     if not mp:

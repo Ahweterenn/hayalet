@@ -141,6 +141,7 @@ function bindSocket(emit) {
         if (s.videoUrl) {
             player.load(s.videoUrl, s.subtitles || [], {
                 startTime: s.currentTime || 0, autoplay: s.isPlaying && !s.isBuffering,
+                resolved: (s.now || {}).kind === 'hayalet',
                 onReady: () => {
                     if (s.isBuffering) { player.setRoomBuffering(true, s.currentTime); }
                     else if (s.isPlaying) player.syncPlay(s.currentTime);
@@ -166,8 +167,9 @@ function bindSocket(emit) {
         state.videoUrl = videoUrl || '';
         if (!videoUrl) { player.clear(); return; }
         // Birlikte izleme geçmişinden "kaldığınız yerden": herkes aynı yerden başlar.
+        const resolved = (now || {}).kind === 'hayalet';
         player.load(videoUrl, subtitles || [], startTime > 0
-            ? { startTime, onReady: () => player.syncSeek(startTime) } : {});
+            ? { startTime, resolved, onReady: () => player.syncSeek(startTime) } : { resolved });
         toast(now && now.title ? `Açıldı: ${now.title}` : 'Yeni içerik açıldı.', 'ok');
     });
     socket.on('queue', ({ items }) => setQueue(items || []));

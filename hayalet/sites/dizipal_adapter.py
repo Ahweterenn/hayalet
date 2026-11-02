@@ -32,9 +32,9 @@ from hayalet.core.utils import poster_url_from_html
 # poster ve sıra numarası var, yapım adı hiç geçmiyor (canlı doğrulandı) — poster
 # göstermediğimiz için adsız kart işe yaramaz. Dizi listeleme sayfasındaki
 # kartlarda ise ad `title="... izle"` niteliğinde duruyor.
-_LIST_PATH = "/yabanci-dizi-izle"
+_LIST_PATH = "/diziler"
 _ANY_CARD_RE = re.compile(
-    r'<a\b([^>]*\bhref\s*=\s*["\'][^"\']*/series/[^"\']+["\'][^>]*)>'
+    r'<a\b([^>]*\bhref\s*=\s*["\'][^"\']*/(?:series/[^"\']+|dizi/[^"\'/]+-dizi-izle)["\'][^>]*)>'
     r'(.*?)</a>', re.S | re.I)
 _HOME_ROW_LIMIT = 20
 
@@ -54,6 +54,8 @@ def _card_name(attrs: str, body: str) -> str:
         if match:
             name = _html.unescape(match.group(1)).strip()
             name = re.sub(r"\s+(?:izle|seyret)\s*$", "", name, flags=re.I)
+            # Yeni kartlarda: aria-label="Nocturne, 2026, Suç, Dram"
+            name = re.sub(r",\s*(?:19|20)\d\d\b.*$", "", name)
             if name:
                 return name
     text = re.sub(r"<[^>]+>", " ", body)
@@ -159,7 +161,7 @@ class DizipalAdapter:
 
     def build_stream(self, net: Network, session: SessionState,
                      episode: Episode, series: Series) -> MergedStream:
-        return merge.build_merged(net, session, episode, series)
+        return merge.build_stream(net, session, episode, series)
 
 
 register(DizipalAdapter())

@@ -322,6 +322,13 @@ def _build_watch_master(proxy, net: Network, session: SessionState, merged,
     from hayalet.core.m3u8_parser import list_variants
     from hayalet.core.proxy import build_master_playlist, build_subs_playlist
 
+    # Düz progressive dosya (ör. anime fansub MP4'ü): HLS değil → variant/proxy/
+    # sentetik master yok. CDN açık olduğundan tarayıcıya DOĞRUDAN adres verilir;
+    # oynatıcı (loadStream) .mp4'ü native <video> ile oynatır. Altyazı/ses kanalı
+    # olmadığı için (gömülü) ses sayısı 0, altyazı yok.
+    if getattr(merged, "kind", "hls") == "file":
+        return merged.video_master_url, 0, False
+
     # Video kalite varyantları (kalite seçimi için); yoksa tek media playlist
     try:
         variants = list_variants(net, session, merged.video_master_url,
@@ -398,7 +405,10 @@ def watch(session: SessionState, net: Network, merged, title: str,
 
     proxy = HLSProxy(session, merged.video_referer).start()
     local_master, n_aud, has_sub = _build_watch_master(proxy, net, session, merged)
-    _start_subsync(proxy, session, merged)
+    # Düz dosya kaynağında ayrı altyazı yok (gömülü) → hizalama ölçümü anlamsız
+    # ve HLS varsayan probe zincirini kırardı; atla.
+    if getattr(merged, "kind", "hls") != "file":
+        _start_subsync(proxy, session, merged)
     if on_progress is not None:
         proxy.progress_cb = on_progress
 
@@ -457,6 +467,40 @@ def download(session: SessionState, net: Network, merged, title: str,
         _say(progress, "[!] ffmpeg bulunamadı (indirme için gerekli).")
         _say(progress, f"    Elle indirmek için master m3u8:\n    {merged.video_master_url}")
         return 1
+
+    # Düz progressive dosya (anime fansub MP4'ü): HLS/proxy/çoklu ses/altyazı yok.
+    # CDN açık olduğundan ffmpeg kaynağı DOĞRUDAN okur; tek geçişte kopyalar.
+    if getattr(merged, "kind", "hls") == "file":
+        out_file = out_dir / f"{safe}.mp4"
+        tmp_file = out_file.with_name(out_file.name + ".part")
+        base_cmd = [ff, "-y", "-i", merged.video_master_url,
+                    "-c", "copy", "-f", "mp4", str(tmp_file)]
+        info = "(düz MP4)"
+        err = ""
+        if progress is not None and task_id is not None:
+            dur = _ffprobe_duration(ff, merged.video_master_url)
+            pcmd = ([ff, "-y", "-hide_banner", "-loglevel", "error",
+                     "-progress", "pipe:1", "-nostats"] + base_cmd[2:])
+            progress.update(task_id, description=f"⬇ {out_file.name} {info}")
+            rc, err = _run_ffmpeg_progress(
+                pcmd, dur, lambda pct, bps: progress.update(task_id, completed=pct))
+        else:
+            print(f"[⬇] İndiriliyor: {out_file.name}  {info}")
+            rc = subprocess.run(base_cmd).returncode
+        if rc == 0:
+            try:
+                tmp_file.replace(out_file)
+            except OSError as e:
+                _say(progress, f"[!] İndirilen dosya yeniden adlandırılamadı: {e}")
+                return 1
+            _say(progress, f"[✔] Tamamlandı: {out_file.name}")
+            logs.log.info("download ok (file): %s", out_file.name)
+        else:
+            tmp_file.unlink(missing_ok=True)
+            _say(progress, f"[!] İndirme başarısız (ffmpeg kodu {rc}).")
+            logs.log.error("download FAIL (file) rc=%s: %s | %s",
+                           rc, out_file.name, (err or "").strip()[-300:])
+        return rc
 
     from hayalet.core.proxy import HLSProxy
     proxy = HLSProxy(session, merged.video_referer).start()

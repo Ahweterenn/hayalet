@@ -15,7 +15,7 @@ import re
 from hayalet import config
 from hayalet.core.models import (Episode, Series, episodes_in_season,
                                  match_episode, next_episode, seasons_of)
-from hayalet.core.network import Network
+from hayalet.core.network import ChallengeError, Network
 from hayalet.core.session import SessionState
 from hayalet.core.utils import normalize_poster_url
 
@@ -51,7 +51,48 @@ class SearchError(Exception):
     """Arama isteği JSON döndürmedi — endpoint/domain ölü (bkz. resolver)."""
 
 
+def _search_api(net: Network, session: SessionState, query: str) -> list[Series] | None:
+    """Yeni sitenin araması. Site bu uca sahip değilse None (eski yola düşülür).
+
+    Sitenin kendisi de iki eylemi birlikte çağırıyor: tam metin araması, kısa
+    aramada ötekinin kaçırdığı kayıtları getiriyor. Yalnız biri cevap verirse
+    onunla yetinilir.
+    """
+    base = session.base_url
+    out: dict[str, Series] = {}
+    answered = False
+    for action in ("searchContent", "searchContentFullText"):
+        try:
+            data = net.post(base + config.SEARCH_API, referer=base + "/",
+                            json={"action": action, "params": [query]},
+                            headers={"Origin": base}).json()
+        except ChallengeError:
+            raise
+        except Exception:
+            continue
+        if not isinstance(data, dict) or "ok" not in data:
+            continue          # JSON'umuz yok: bu uç bu sitede yok
+        answered = True       # ok:false da cevaptır (ör. 3 harften kısa sorgu)
+        for r in data.get("result") or []:
+            slug = (r.get("used_slug") or "").strip("/")
+            typ = r.get("used_type") or ""
+            if not slug or typ.lower() not in _SEARCH_TYPES or slug in out:
+                continue          # oyuncu kayıtları da bu listede geliyor
+            imdb = r.get("object_related_imdb_point")
+            out[slug] = Series(
+                name=r.get("object_name") or slug, slug=slug, type=typ,
+                year=str(r.get("object_release_year") or ""),
+                rating=str(imdb) if imdb else "",
+                poster_url=str(normalize_poster_url(
+                    str(r.get("object_poster_url") or ""), base)))
+    return list(out.values()) if answered else None
+
+
 def search(net: Network, session: SessionState, query: str) -> list[Series]:
+    found = _search_api(net, session, query)
+    if found is not None:
+        return found
+
     cvalue, ckey = _tokens(net, session)
 
     def _post(term: str):
@@ -136,7 +177,8 @@ def suggest(net: Network, session: SessionState, query: str, limit: int = 5) -> 
     return ranked[:limit]
 
 
-_MOVIE_TYPES = {"movies", "movie", "film"}
+_MOVIE_TYPES = {"movies", "movie", "film", "movieseries"}
+_SEARCH_TYPES = _MOVIE_TYPES | {"series"}
 
 
 def is_movie(series: "Series") -> bool:
@@ -163,10 +205,18 @@ def get_episodes(net: Network, session: SessionState, series: Series) -> list[Ep
     seen: set[str] = set()
     episodes: list[Episode] = []
 
+    # Sayfada başka dizilere giden kartlar da olabilir; yalnız bu dizinin
+    # yolundakiler sayılır ("dizi/sherlock-dizi-izle" -> "/dizi/sherlock/").
+    own = re.fullmatch(r"dizi/([a-z0-9\-]+?)-dizi-izle", series.slug.strip("/"), re.I)
+    prefix = f"/dizi/{own.group(1).lower()}/" if own else ""
+
     # YENİ biçim (2026-10): /dizi/<slug>/3-sezon/7-bolum — sezon/bölüm yolda.
     for link, sez, bol in re.findall(config.SELECTORS["bolum_link_sezon"],
                                      html, re.I):
-        url = _abs(link, session)
+        if prefix and prefix not in link.lower():
+            continue
+        # Aynı bölüm hem göreli hem http://<alan>/... olarak geçiyor; tek adrese indir.
+        url = _abs(re.sub(r"^https?://[^/]+", "", link), session)
         if url in seen:
             continue
         seen.add(url)

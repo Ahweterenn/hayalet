@@ -259,13 +259,58 @@ html.native-video, html.native-video body, html.native-video .app, html.native-v
 .call-local { position: absolute; top: 8px; right: 8px; width: 30%; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 10px; box-shadow: 0 0 0 2px rgba(255,255,255,.3); background: #222; transform: scaleX(-1); }
 .call-dock.no-remote-video .call-remote, .call-dock.audio-only .call-remote { aspect-ratio: auto; height: 0; }
 .call-dock.audio-only { width: auto; border-radius: 999px; }
-.call-bar { display: flex; align-items: center; gap: 2px; padding: 4px 6px; color: #fff; background: rgba(12,15,22,.92); }
+/* Denetim barı video ÜSTÜNE overlay: kutu yalnız video kadar yer kaplar, bar
+   normalde gizli, dokun/hover ile belirir (bkz. call.js _showControls). */
+.call-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+    display: flex; align-items: center; gap: 2px; padding: 12px 6px 5px; color: #fff;
+    background: linear-gradient(transparent, rgba(12,15,22,.95) 45%);
+    opacity: 0; pointer-events: none; transition: opacity .18s; }
 .call-bar .c-btn { width: 36px; height: 36px; }
 .call-bar .c-btn .icon { width: 19px; height: 19px; }
 .call-bar .c-btn.off { background: var(--danger); }
 .call-bar .c-btn.end { background: var(--danger); margin-left: auto; }
 .call-vol { width: 64px; flex: 1; min-width: 40px; accent-color: #fff; }
+.call-dock.show-ctl .call-bar, .call-dock.show-ctl .call-resize { opacity: 1; pointer-events: auto; }
+@media (hover: hover) and (pointer: fine) {
+    .call-dock:hover .call-bar, .call-dock:hover .call-resize { opacity: 1; pointer-events: auto; }
+}
+/* Sesli arama: video yok → bar içeriğin kendisi, akışta ve hep görünür (pill). */
+.call-dock.audio-only .call-bar { position: static; opacity: 1; pointer-events: auto;
+    background: rgba(12,15,22,.92); padding: 4px 6px; }
 .call-dock[data-conn="disconnected"] { box-shadow: 0 0 0 2px var(--warn), 0 12px 34px rgba(0,0,0,.5); }
+
+/* Boyutlandırma tutamağı (sol-üst köşe). Pointer olaylarıyla sürüklenir →
+   telefon/tablet/PC hepsinde çalışır (bkz. call.js _bindDock). */
+.call-resize {
+    position: absolute; left: 0; top: 0; width: 24px; height: 24px; z-index: 3;
+    cursor: nwse-resize; touch-action: none;
+    border-top-left-radius: 16px; background: rgba(12,15,22,.5);
+    opacity: 0; pointer-events: none; transition: opacity .18s;
+}
+.call-resize::after {
+    content: ''; position: absolute; left: 6px; top: 6px; width: 9px; height: 9px;
+    border-top: 2px solid rgba(255,255,255,.85); border-left: 2px solid rgba(255,255,255,.85);
+    border-top-left-radius: 3px;
+}
+.call-dock.resizing { transition: none; }
+.call-dock.audio-only .call-resize,
+.call-dock:fullscreen .call-resize,
+.call-dock.fs-fallback .call-resize { display: none; }
+
+/* Görüşme tam ekran: karşı taraf ekranı doldurur, denetim barı altta kalır.
+   !important sürükleme sırasında bırakılan satır-içi left/top'u ezmek için. */
+.call-dock:fullscreen, .call-dock.fs-fallback {
+    width: 100vw !important; height: 100vh !important;
+    left: 0 !important; top: 0 !important; right: auto !important; bottom: auto !important;
+    border-radius: 0; background: #000; display: flex; flex-direction: column;
+}
+.call-dock.fs-fallback { position: fixed; inset: 0; z-index: 50; }
+.call-dock:fullscreen .call-remote, .call-dock.fs-fallback .call-remote {
+    flex: 1 1 auto; height: auto; aspect-ratio: auto; object-fit: contain;
+}
+.call-dock:fullscreen .call-local, .call-dock.fs-fallback .call-local {
+    width: 22%; max-width: 200px; aspect-ratio: 3 / 4;
+}
 
 /* tepkiler: sağ alttan yükselen emojiler ve seçim tepsisi */
 .reactions { position: absolute; right: 0; bottom: 0; z-index: 10; width: min(220px, 40%); height: 70%; pointer-events: none; overflow: hidden; }
@@ -431,7 +476,12 @@ html.native-video, html.native-video body, html.native-video .app, html.native-v
 @media (max-width: 599px) { .c-lock span { display: none; } .c-lock { padding: 6px; } }
 /* Küçük görüşme kutusunda ses çubuğu sığmıyor (yatay telefonda kapat düğmesi
    kesiliyordu); büyütülünce görünür. */
-@media (max-width: 900px), (max-height: 560px) { .call-dock:not(.big) .call-vol { display: none; } .call-dock { min-width: 184px; } }
+/* Telefon/küçük ekran: kutu çok daha küçük varsayılan (eski min-width 184 onu
+   büyük tutuyordu). Denetimler dokununca overlay olarak çıktığı için ses de
+   erişilebilir; isteyen köşe tutamağından daha da küçültür/büyütür. */
+@media (max-width: 900px), (max-height: 560px) {
+    .call-dock { width: clamp(120px, 36vw, 200px); min-width: 0; }
+}
 
 /* --- geniş ekran: tablet yatay / PC --------------------------------------------- */
 @media (min-width: 900px) and (min-aspect-ratio: 1 / 1) {

@@ -8,7 +8,7 @@ from pathlib import Path
 
 # --- Domain ---------------------------------------------------------------
 # Son bilinen domain; resolver bunu doğrular/override eder.
-KNOWN_DOMAIN = "https://dizipal1822.com"
+KNOWN_DOMAIN = "https://dizipal1823.com"
 
 # Güncel domaini veren yönlendirme kaynakları (resolver adımında doldurulacak).
 RESOLVER_SOURCES: list[str] = []
@@ -54,7 +54,10 @@ DOWNLOAD_DIR = Path(os.environ.get("HAYALET_DOWNLOAD_DIR") or (Path.home() / "Do
 CACHE_DIR = Path(os.environ.get("HAYALET_CACHE_DIR") or (PROJECT_ROOT / ".cache"))
 
 # --- Site endpoint'leri (canlı incelemeyle doğrulandı) --------------------
-SEARCH_ENDPOINT = "/bg/searchcontent"   # POST: searchterm + cValue -> JSON
+SEARCH_ENDPOINT = "/bg/searchcontent"   # ESKİ: POST searchterm + cValue -> JSON
+# YENİ (2026-11, Next.js'e geçiş): POST {"action": ..., "params": [sorgu]} -> JSON.
+# Origin başlığı şart, yoksa 403 "forbidden" döner.
+SEARCH_API = "/api/mj"
 
 # --- Player şifre çözme (data-rm-k) ---------------------------------------
 # Bölüm sayfasındaki oynatıcı kaynağı CryptoJS AES + PBKDF2-SHA512 ile
@@ -78,7 +81,9 @@ SELECTORS = {
     # /bolum/<slug>-3x7 şemasını bıraktı; sezon/bölüm artık yolun kendisinde.
     # Eski kalıp yerinde duruyor, catalog.get_episodes yeni biçim boş gelirse
     # ona düşüyor.
-    "bolum_link_sezon": r'href="([^"]*?/dizi/[a-z0-9\-]+/(\d+)-sezon/(\d+)-bolum)"',
+    # href="..." şartı yok: listenin çoğu HTML'de değil, sayfa verisinde kaçışlı
+    # metin olarak geliyor (ölçüldü: Sherlock'ta <a> ile 1, veride 19 bölüm).
+    "bolum_link_sezon": r'((?:https?://[a-z0-9.\-]+)?/dizi/[a-z0-9\-]+/(\d+)-sezon/(\d+)-bolum)(?![\w\-])',
 }
 
 # --- Reklam kara listesi (örnek eklentiden birebir) -----------------------

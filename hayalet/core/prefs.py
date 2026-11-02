@@ -42,6 +42,18 @@ def save(**kv) -> None:
         pass
 
 
+def forget_resume() -> bool:
+    """'Kaldığın yerden devam' kaydını siler. Silinecek kayıt varsa True."""
+    try:
+        data = load()
+        if data.pop("resume", None) is None:
+            return False
+        _FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
 # --- Cloudflare cf_clearance kalıcılığı ----------------------------------
 def _host(url_or_host: str) -> str:
     """'https://www.site.nl/x' ya da 'www.site.nl' -> 'www.site.nl'."""

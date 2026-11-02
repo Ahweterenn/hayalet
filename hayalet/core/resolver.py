@@ -88,7 +88,16 @@ def _search_works(net: Network, url: str, html: str) -> bool:
     """
     m = re.search(r'name="cValue"\s+value="([^"]+)"', html)
     if not m:
-        return False                     # arama formu yoksa katalog gezilemez
+        # Yeni sitede form yok, arama /api/mj üzerinden yürüyor. Ayna buna da
+        # anasayfa döner; JSON'da ok:true görmeden kabul edilmez.
+        try:
+            r = net.post(url + config.SEARCH_API, referer=url + "/",
+                         # en az 3 harf ister, kısası 400 invalid-params döner
+                         json={"action": "searchContent", "params": ["the"]},
+                         headers={"Origin": url})
+            return r.json().get("ok") is True
+        except Exception:
+            return False
     payload = {"searchterm": "a", "cValue": m.group(1)}
     k = re.search(r'name="cKey"\s+value="([^"]+)"', html)
     if k:

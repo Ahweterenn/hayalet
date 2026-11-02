@@ -16,10 +16,22 @@
 
 import { $, h, icon, toast, store, avatar } from './ui.js';
 
+// STUN + TURN. STUN çoğu ev ağında doğrudan yol buluyor; sert/simetrik NAT'ta
+// (mobil veri, bazı modemler) doğrudan bağlantı kurulamıyor ve görüşme "2-3
+// denemede açılıyor" gibi görünüyordu. TURN relay bu durumda trafiği aktararak
+// bağlantıyı kurtarır. Buradaki TURN'ler HERKESE AÇIK, ücretsiz, hesapsız ortak
+// sunuculardır (metered openrelay) — kullanıcıya ait hiçbir hesap/kimlik kodda
+// gömülü değildir. Ücretsiz oldukları için best-effort: ara sıra yavaş/kapalı
+// olabilir, o zaman STUN'a düşülür (eski davranış). 80 + 443 + 443/tcp:
+// güvenlik duvarı yalnız 443'e izin veren ağlarda da aktarma bulunsun diye.
 const RTC_CONFIG = {
     iceServers: [
         { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
         { urls: 'stun:stun.cloudflare.com:3478' },
+        { urls: 'stun:openrelay.metered.ca:80' },
+        { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
     ],
     iceCandidatePoolSize: 10,
 };
@@ -151,6 +163,27 @@ export class Call {
         this._renderDock();
     }
 
+    _toggleFullscreen() {
+        const d = this.dock;
+        if (document.fullscreenElement === d) { document.exitFullscreen && document.exitFullscreen(); return; }
+        // Fullscreen API yoksa/engellenirse CSS ile tam-ekran taklidi.
+        const p = d.requestFullscreen ? d.requestFullscreen() : Promise.reject();
+        Promise.resolve(p).catch(() => d.classList.toggle('fs-fallback'));
+    }
+
+    // Denetimleri göster (toggle=true ise açıksa gizler); birkaç saniye sonra
+    // kendiliğinden gizlenir. Kutuya dokununca ve görüşme açılınca çağrılır.
+    _showControls(toggle = false) {
+        const d = this.dock;
+        clearTimeout(this._ctlTimer);
+        if (toggle && d.classList.contains('show-ctl')) {
+            d.classList.remove('show-ctl');
+            return;
+        }
+        d.classList.add('show-ctl');
+        this._ctlTimer = setTimeout(() => d.classList.remove('show-ctl'), 3500);
+    }
+
     setVolume(v) {
         this.volume = Math.max(0, Math.min(2, Number(v) || 0));
         store.set('oda.callVolume', String(this.volume));
@@ -167,6 +200,7 @@ export class Call {
         this.dock.hidden = false;
         this.dock.classList.toggle('audio-only', !isVideo);
         this._renderDock();
+        this._showControls();   // açılışta denetimler görünür, sonra gizlenir
     }
 
     _newPeer() {
@@ -402,25 +436,73 @@ export class Call {
             if (a === 'mute') this.toggleMute();
             else if (a === 'cam') this.toggleCam();
             else if (a === 'end') this.end(true);
-            else if (a === 'size') d.classList.toggle('big');
+            // Hızlı önayar: inline genişliği (resize tutamağından) temizle ki
+            // .big/normal sınıf genişliği yeniden geçerli olsun.
+            else if (a === 'size') { d.style.width = ''; d.classList.toggle('big'); }
+            else if (a === 'fs') this._toggleFullscreen();
+        });
+        // Tam ekrandan çıkınca (ESC ya da sistem) sürükleme için bıraktığımız
+        // satır-içi konum kalmasın diye temizlenir; CSS yeniden köşeye yerleştirir.
+        document.addEventListener('fullscreenchange', () => {
+            if (document.fullscreenElement !== d) {
+                Object.assign(d.style, { left: '', top: '', right: '', bottom: '' });
+            }
         });
         $('.call-vol', d).value = String(Math.round(this.volume * 100));
         $('.call-vol', d).addEventListener('input', e => this.setVolume(e.target.value / 100));
         // Sürükleme: kutu videonun üstünde istenen köşeye taşınabilsin.
+        // Boyutlandırma (resize): sağ-alt köşe sabit kalır, sol-üst tutamaktan
+        // genişlik ayarlanır (yükseklik .call-remote'un 4:3 oranından türer).
+        // Pointer olayları dokunma (telefon/tablet) ve fareyi (PC) birlikte kapsar.
+        const handle = $('.call-resize', d);
+        let rz = null;
+        handle.addEventListener('pointerdown', e => {
+            e.stopPropagation();                      // drag'i tetikleme
+            if (document.fullscreenElement === d) return;
+            const r = d.getBoundingClientRect(), p = d.offsetParent.getBoundingClientRect();
+            // Sağ-alt köşeyi sabitle (right/bottom) ki büyüme sol-üste doğru olsun.
+            Object.assign(d.style, {
+                right: (p.right - r.right) + 'px', bottom: (p.bottom - r.bottom) + 'px',
+                left: 'auto', top: 'auto',
+            });
+            rz = { rightX: r.right, minW: 100, maxW: Math.min(p.width - 24, 900) };
+            handle.setPointerCapture(e.pointerId);
+            d.classList.add('resizing');
+        });
+        handle.addEventListener('pointermove', e => {
+            if (!rz) return;
+            const w = Math.max(rz.minW, Math.min(rz.rightX - e.clientX, rz.maxW));
+            d.style.width = w + 'px';
+        });
+        const stopRz = () => { if (rz) { rz = null; d.classList.remove('resizing'); } };
+        handle.addEventListener('pointerup', stopRz);
+        handle.addEventListener('pointercancel', stopRz);
+
+        // Kutu normalde SADE (yalnız video). Üstüne dokununca denetimler (kapat,
+        // ses, boyut, tam ekran) belirir, birkaç saniye sonra yine gizlenir; az
+        // yer kaplamak ve diziyi kapatmamak için (özellikle telefonda).
+        // Sürükleme (taşıma) ile dokunmayı (denetim göster) ayırırız: 5px'ten az
+        // hareket = dokunma.
         let drag = null;
         d.addEventListener('pointerdown', e => {
-            if (e.target.closest('button, input')) return;
+            if (e.target.closest('button, input, .call-resize')) return;
             const r = d.getBoundingClientRect(), p = d.offsetParent.getBoundingClientRect();
-            drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, p };
-            d.setPointerCapture(e.pointerId); d.classList.add('dragging');
+            drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, p,
+                sx: e.clientX, sy: e.clientY, moved: false };
+            d.setPointerCapture(e.pointerId);
         });
         d.addEventListener('pointermove', e => {
             if (!drag) return;
+            if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 5) return;
+            if (!drag.moved) { drag.moved = true; d.classList.add('dragging'); }
             const x = Math.max(0, Math.min(e.clientX - drag.p.left - drag.dx, drag.p.width - d.offsetWidth));
             const y = Math.max(0, Math.min(e.clientY - drag.p.top - drag.dy, drag.p.height - d.offsetHeight));
             Object.assign(d.style, { left: x + 'px', top: y + 'px', right: 'auto', bottom: 'auto' });
         });
-        const stop = () => { drag = null; d.classList.remove('dragging'); };
+        const stop = () => {
+            if (drag && !drag.moved) this._showControls(true);   // dokunma = göster/gizle
+            drag = null; d.classList.remove('dragging');
+        };
         d.addEventListener('pointerup', stop); d.addEventListener('pointercancel', stop);
     }
 

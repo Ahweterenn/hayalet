@@ -75,9 +75,9 @@ def _fetch(url: str, label: str = "") -> Optional[str]:
                             headers={"Accept-Language": "en-US,en;q=0.8"})
         if resp.status_code == 200:
             return resp.text
-        print(f"HayaletDebug: {label} HTTP {resp.status_code}", flush=True)
+        logs.log.debug(f"{label} HTTP {resp.status_code}")
     except Exception as e:
-        print(f"HayaletDebug: {label} curl_cffi error: {e}", flush=True)
+        logs.log.debug(f"{label} curl_cffi error: {e}")
 
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mozilla/5.0",
@@ -90,7 +90,7 @@ def _fetch(url: str, label: str = "") -> Optional[str]:
             with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
                 return r.read().decode()
         except Exception as e:
-            print(f"HayaletDebug: {label} urllib error (verify={verify}): {e}", flush=True)
+            logs.log.debug(f"{label} urllib error (verify={verify}): {e}")
     return None
 
 # ---------------------------------------------------------------------------
@@ -117,16 +117,16 @@ def _resolve_tvmaze_show_path(series_name: str) -> Optional[str]:
     for path, slug in candidates:
         readable = slug.replace("-", " ")
         score = _name_score(series_name, readable)
-        print(f"HayaletDebug: TVMaze candidate '{readable}' score={score:.2f}", flush=True)
+        logs.log.debug(f"TVMaze candidate '{readable}' score={score:.2f}")
         if score > best_score:
             best_score = score
             best_path = path
 
     if best_score < 0.4:
-        print(f"HayaletDebug: TVMaze best score {best_score:.2f} < 0.4, reddedildi", flush=True)
+        logs.log.debug(f"TVMaze best score {best_score:.2f} < 0.4, reddedildi")
         return None
 
-    print(f"HayaletDebug: TVMaze secildi -> {best_path} (score={best_score:.2f})", flush=True)
+    logs.log.debug(f"TVMaze secildi -> {best_path} (score={best_score:.2f})")
     return best_path
 
 
@@ -155,7 +155,7 @@ def get_tvmaze_episode_runtime(
             return int(m.group(1))
         return None
     except Exception as e:
-        print(f"HayaletDebug: TVMaze runtime check failed: {e}", flush=True)
+        logs.log.debug(f"TVMaze runtime check failed: {e}")
         return None
 
 
@@ -182,19 +182,19 @@ def get_imdb_episode_runtime(
             if not ids:
                 return None
             best_id = ids[0]
-            print(f"HayaletDebug: IMDb fallback, ilk ID: {best_id}", flush=True)
+            logs.log.debug(f"IMDb fallback, ilk ID: {best_id}")
         else:
             best_id, best_score = None, -1.0
             for tt_id, title in pairs:
                 score = _name_score(series_name, title)
-                print(f"HayaletDebug: IMDb candidate '{title}' ({tt_id}) score={score:.2f}", flush=True)
+                logs.log.debug(f"IMDb candidate '{title}' ({tt_id}) score={score:.2f}")
                 if score > best_score:
                     best_score = score
                     best_id = tt_id
             if best_score < 0.4:
-                print(f"HayaletDebug: IMDb best score {best_score:.2f} < 0.4, reddedildi", flush=True)
+                logs.log.debug(f"IMDb best score {best_score:.2f} < 0.4, reddedildi")
                 return None
-            print(f"HayaletDebug: IMDb secildi -> {best_id} (score={best_score:.2f})", flush=True)
+            logs.log.debug(f"IMDb secildi -> {best_id} (score={best_score:.2f})")
 
         page_text = _fetch(
             f"https://www.imdb.com/title/{best_id}/episodes/?season={season}",
@@ -215,7 +215,7 @@ def get_imdb_episode_runtime(
             return int(m.group(1))
         return int(m.group(2) or 0) * 60 + int(m.group(3) or 0)
     except Exception as e:
-        print(f"HayaletDebug: IMDb runtime check failed: {e}", flush=True)
+        logs.log.debug(f"IMDb runtime check failed: {e}")
         return None
 
 
@@ -239,11 +239,11 @@ def get_tvmaze_average_runtime(series_name: str) -> Optional[int]:
         if m:
             val = int(m.group(1))
             if 1 < val < 300:
-                print(f"HayaletDebug: TVMaze averageRuntime={val} dk (HTML)", flush=True)
+                logs.log.debug(f"TVMaze averageRuntime={val} dk (HTML)")
                 return val
         return None
     except Exception as e:
-        print(f"HayaletDebug: TVMaze averageRuntime check failed: {e}", flush=True)
+        logs.log.debug(f"TVMaze averageRuntime check failed: {e}")
         return None
 
 
@@ -270,6 +270,10 @@ def get_reference_runtimes(
 def get_stream_duration(net: Network, stream: MergedStream) -> Optional[float]:
     """Bir MergedStream nesnesindeki videonun toplam süresini (dakika) tahmin eder."""
     try:
+        # Düz dosya kaynağı (ör. anime MP4'ü): m3u8 değil, EXTINF yok. Adresi
+        # metin diye çekmek koca dosyayı indirmek olur → süre kontrolü atlanır.
+        if getattr(stream, "kind", "hls") == "file":
+            return None
         m3u8_url = stream.video_master_url
         if not m3u8_url:
             return None
@@ -321,13 +325,13 @@ def verify_episode(net: Network, series_name: str, season: int, episode: int, st
     else:
         all_refs = secondary_refs
         
-    print(f"HayaletDebug: verify_episode('{series_name}') -> primary={primary_refs}, secondary={secondary_refs}, all={all_refs}", flush=True)
+    logs.log.debug(f"verify_episode('{series_name}') -> primary={primary_refs}, secondary={secondary_refs}, all={all_refs}")
     if not all_refs:
-        print(f"HayaletDebug: verify_episode -> all_refs is empty, returning True!", flush=True)
+        logs.log.debug(f"verify_episode -> all_refs is empty, returning True!")
         return True, None
         
     stream_min = get_stream_duration(net, stream)
-    print(f"HayaletDebug: verify_episode stream_min={stream_min}", flush=True)
+    logs.log.debug(f"verify_episode stream_min={stream_min}")
     if not stream_min:
         return True, None
         
@@ -335,10 +339,10 @@ def verify_episode(net: Network, series_name: str, season: int, episode: int, st
     
     # Tolerans: Standart 12 dakika
     if abs(closest - stream_min) <= 12:
-        print(f"HayaletDebug: verify_episode closest={closest}, stream_min={stream_min} -> OK", flush=True)
+        logs.log.debug(f"verify_episode closest={closest}, stream_min={stream_min} -> OK")
         return True, None
         
-    print(f"HayaletDebug: verify_episode closest={closest}, stream_min={stream_min} -> FAILED", flush=True)
+    logs.log.debug(f"verify_episode closest={closest}, stream_min={stream_min} -> FAILED")
         
     display_refs = primary_refs if primary_refs else all_refs
     
