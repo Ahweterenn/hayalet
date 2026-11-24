@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 
+from hayalet.core import npgate
 from hayalet.core.extractor import ExtractError
 from hayalet.core.network import Network, media_headers
 
@@ -54,6 +55,10 @@ def resolve(net: Network, iframe_url: str, page_referer: str) -> tuple[str, str,
         cfg = json.loads(m.group(1))
     except ValueError as e:
         raise ExtractError(f"pichive: NP_CONFIG çözülemedi: {e}")
+    try:
+        npgate.apply(t, cfg)   # 2026-11: &p=<iş kanıtı> yoksa nm.php/nsub.php boş 404
+    except npgate.GateError as e:
+        raise ExtractError(f"pichive: {e}")
 
     sources = [s for s in (cfg.get("sources") or []) if s.get("master")]
     if not sources:
@@ -65,6 +70,8 @@ def resolve(net: Network, iframe_url: str, page_referer: str) -> tuple[str, str,
     subs = cfg.get("subtitles") or []
     tr = next((s for s in subs if (s.get("lang") or "").lower().startswith("tr")), None)
     chosen = tr or (subs[0] if subs else None)
-    if chosen and chosen.get("tok"):
-        subtitle_url = f"{host}/nsub.php?v={chosen['tok']}"
+    if chosen and chosen.get("url"):
+        subtitle_url = _abs(chosen["url"])
+    elif chosen and chosen.get("tok"):
+        subtitle_url = f"{host}/nsub.php?v={chosen['tok']}" + chosen.get("_gate", "")
     return master, referer, subtitle_url

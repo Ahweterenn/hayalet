@@ -1,0 +1,98 @@
+"""Cloudflare cf_clearance'ı kendiliğinden yenileme — masaüstü ve Android ortak.
+
+Cookie'yi KİM alırsa alsın kayıt aynıdır (prefs.save_cf: cookie + onu veren
+tarayıcının UA'sı). Değişen yalnız "çözücü":
+  - masaüstü: ekran dışı bir Chrome penceresi (core/cf_grab.py, CDP)
+  - Android: uygulamanın görünmez WebView'i (CfSolver.java) — köprü
+    (hayalet_app.py) açılışta `cfauto.solver`'ı ona bağlar.
+Cookie onu alan cihazın IP'sine bağlı olduğundan her cihaz kendi cookie'sini
+kendisi almak ZORUNDA; PC'nin cookie'si telefonda işe yaramaz.
+"""
+from __future__ import annotations
+
+import os
+import threading
+
+from hayalet.core import prefs
+
+# callable(url: str, timeout_s: float) -> (cookie, user_agent); None = masaüstü varsayılanı
+solver = None
+
+_lock = threading.Lock()
+
+
+def impersonate_for(ua: str) -> str | None:
+    """Cookie'yi veren tarayıcının UA'sına uyan curl-cffi TLS profili.
+
+    Cloudflare UA ile TLS imzasının aynı aileden olmasına bakabiliyor;
+    rastgele persona (ör. Safari) imzasıyla Chrome cookie'si göndermek riskli.
+    """
+    if not ua or "Edg/" in ua:
+        return None
+    if "Chrome/" in ua:
+        return "chrome_android" if "Android" in ua else "chrome"
+    return None
+
+
+def parse_cookie(raw: str) -> dict[str, str]:
+    """'abc', 'cf_clearance=abc' ya da 'a=1; b=2' -> sözlük."""
+    raw = (raw or "").strip()
+    if "=" not in raw:
+        return {"cf_clearance": raw} if raw else {}
+    out = {}
+    for part in raw.split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def apply_saved(adapter, session) -> bool:
+    """Kayıtlı cookie+UA varsa oturuma uygular. Uygulandıysa True."""
+    rec = prefs.load_cf(adapter.known_domain)
+    if not rec:
+        return False
+    session.cookies.update(parse_cookie(rec["cookie"]))
+    ua = rec.get("user_agent")
+    if ua:
+        session.user_agent = ua
+        imp = impersonate_for(ua)
+        if imp:
+            session.impersonate = imp
+    return True
+
+
+def _desktop_solver(url: str, timeout: float):
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return None
+    from hayalet.core import cf_grab
+    return cf_grab.grab(url, timeout=timeout, hidden=True)
+
+
+def available() -> bool:
+    if os.environ.get("HAYALET_CF_OTOMATIK", "1") == "0":
+        return False
+    if solver is not None:
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def refresh(adapter, timeout: float = 45) -> bool:
+    """Yeni cookie alıp kaydeder. Başarılıysa True (hata yutulur, False döner)."""
+    if not available():
+        return False
+    with _lock:   # aynı anda iki pencere/WebView açılmasın
+        prefs.forget_cf(adapter.known_domain)
+        try:
+            got = (solver or _desktop_solver)(adapter.known_domain, timeout)
+        except Exception:
+            return False
+        if not got or not got[0]:
+            return False
+        cookie, ua = got
+        prefs.save_cf(adapter.known_domain, cookie, ua)
+        return True
+
+
+def is_challenge(exc: BaseException) -> bool:
+    return "challenge" in str(exc).lower()

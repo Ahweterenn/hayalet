@@ -86,7 +86,16 @@ def get_av_urls(net: Network, session: SessionState, master_url: str,
     from urllib.parse import urljoin
     from hayalet.core.utils import looks_turkish
 
-    text = net.get(master_url, referer=referer, headers=media_headers(referer)).text
+    resp = net.get(master_url, referer=referer, headers=media_headers(referer))
+    text = resp.text
+    # Boş 404 / HTML sayfası m3u8.loads'tan "varyantsız playlist" olarak geçiyor
+    # ve çağıran onu çalışan kaynak sanıyordu (ölçüldü 2026-11: pichive gate'i
+    # eklenmeden nm.php boş 404 → --doctor yeşil, oynatma ölü). Burada kes ki
+    # adaptör sıradaki kaynağa geçebilsin.
+    if "#EXTM3U" not in text.lstrip("\ufeff")[:1024]:
+        from hayalet.core.extractor import ExtractError
+        raise ExtractError(f"master m3u8 değil (HTTP {getattr(resp, 'status_code', '?')}): "
+                           f"{master_url[:80]}")
     pl = m3u8.loads(text, uri=master_url)
 
     # --- Video varyantı ---

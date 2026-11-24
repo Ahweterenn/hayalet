@@ -27,6 +27,7 @@ Zincir (canlı doğrulandı, saf Python / headless):
 """
 from __future__ import annotations
 
+import ast
 import base64
 import html
 import json
@@ -166,10 +167,13 @@ def _unmix(parts: list[str], unpacked_src: str) -> str:
 #   5. Son adım: akan bir XOR şifre çözme (her baytta çarpım+toplama ile
 #      güncellenen bir sayaçla XOR'lanır).
 _GEN2_REAL_VAR_RE = re.compile(r'sources:\s*\[\{file:(\w+)\}')
+_GEN2_INLINE_CALL_RE = re.compile(
+    r'sources:\s*\[\{file:\(function\(\)\s*\{.*?return\s+(\w+)\('
+    r'(\[[^\]]*\]|"[^"]*"\.split\("[^"]*"\))\);', re.S)
 _GEN2_SPLICE_POS_RE = re.compile(
     r'var (\w+)=(\w+)\.length-2,(\w+)=\1%(\d+),(\w+)=(\d+)\+\(\1%(\d+)\)')
 _GEN2_HASH_RE = re.compile(
-    r'(\w+)=\((\w+)\*(\d+)\+(\w+)\)%(\d+);(\w+)=\((\w+)\+\(\((\w+)<<1\)\^(\w+)\)\)&255')
+    r'(\w+)=\((\w+)\*(\d+)\+(\w+)\)%(\d+);(\w+)=\((\w+)\+\(\((\w+)<<(\d+)\)\^(\w+)\)\)&255')
 _GEN2_DERIVED_RE = re.compile(
     r'(\w+)=\((\w+)\*(\d+)\+(\w+)\)%256,(\w+)=\((\w+)%(\d+)\)\+(\d+),'
     r'(\w+)=\(\((\w+)\*(\d+)\+(\w+)\)%(\d+)\)\+1')
@@ -218,6 +222,7 @@ def _gen2_decode(arr: list[str], body: str) -> str:
     _, _, _, n1, addvar, add_base, n2 = pos_m.groups()
     n1, add_base, n2 = int(n1), int(add_base), int(n2)
     h1_mul, h1_mod = int(hash_m.group(3)), int(hash_m.group(5))
+    h2_shift = int(hash_m.group(9))  # gen2: <<1, 2026-11: <<2
     dg = der_m.groups()
     d1_mul, d2_mod, d2_add = int(dg[2]), int(dg[6]), int(dg[7])
     d3_mul, d3_mod = int(dg[10]), int(dg[12])
@@ -243,7 +248,7 @@ def _gen2_decode(arr: list[str], body: str) -> str:
     for i, ch in enumerate(key):
         c = ord(ch)
         h1 = (h1 * h1_mul + c) % h1_mod
-        h2 = (h2 + ((c << 1) ^ i)) & 255
+        h2 = (h2 + ((c << h2_shift) ^ i)) & 255
 
     d1 = (h1 * d1_mul + h2) % 256
     d2 = (h2 % d2_mod) + d2_add
@@ -290,29 +295,163 @@ def _gen2_decode(arr: list[str], body: str) -> str:
     return "".join(out)
 
 
+# --- 3. nesil (2026-11): genel çözücü ---------------------------------------
+# Site artık her yüklemede İKİ algoritma ailesinden birini seçiyor ve
+# sabitleri/işlemleri (çarpan, mod, <<1 yerine <<2, toplama yerine XOR, KEY/OP
+# splice ile mi yoksa düz dizgi olarak mı geldiği…) değiştiriyor. Her biri için
+# ayrı regex yazmak yerine fonksiyonun İSKELETİ (hash döngüsü → 3 türetilmiş
+# sabit → OP adımları → LCG karıştırma → akan XOR) sabit kabul edilip her
+# adımın aritmetik İFADESİ kaynaktan okunur ve güvenli biçimde hesaplanır:
+# yalnız tamsayı, değişken adı ve + * % ^ & << >> işlemleri — başka hiçbir şey
+# (çağrı, öznitelik, dizgi) kabul edilmez, yani uzaktan kod ÇALIŞTIRILMAZ.
+_SAFE_NODES = (ast.Expression, ast.BinOp, ast.Name, ast.Load, ast.Constant,
+               ast.Add, ast.Sub, ast.Mult, ast.Mod, ast.BitXor, ast.BitAnd,
+               ast.BitOr, ast.LShift, ast.RShift)
+
+
+def _arith(expr: str):
+    """JS tamsayı ifadesini derlenmiş, güvenli bir Python ifadesine çevirir."""
+    tree = ast.parse(expr.strip(), mode="eval")
+    for node in ast.walk(tree):
+        if not isinstance(node, _SAFE_NODES) or (
+                isinstance(node, ast.Constant) and type(node.value) is not int):
+            raise ExtractError(f"hdfilmcehennemi: beklenmeyen ifade: {expr[:60]}")
+    return compile(tree, "<hdfc>", "eval")
+
+
+def _ev(code, env: dict) -> int:
+    return eval(code, {"__builtins__": {}}, env)  # noqa: S307 — _arith ile doğrulandı
+
+
+_G3_STR_VAR = r'var\s+{}\s*=\s*"([^"]*)"'
+_G3_KEY_LOOP_RE = re.compile(
+    r'for\((\w+)=0;\1<(\w+)\.length;\1\+\+\)\{(\w+)=\2\.charCodeAt\(\1\);'
+    r'(\w+)=([^;]+);(\w+)=([^}]+)\}')
+_G3_DERIVED_RE = re.compile(r'var\s+(\w+)=([^,;]+),(\w+)=([^,;]+),(\w+)=([^;]+);')
+_G3_OP_LOOP_RE = re.compile(r'for\(\w+=(\w+)\.length-1;\w+>=0;\w+--\)\{\w+=\1\.charAt')
+_G3_LCG_RE = re.compile(r'(\w+)=([^;]+);\w+\[(\w+)\]=\1%\(\3\+1\)')
+_G3_STREAM_RE = re.compile(
+    r"var\s+(\w+)=(\w+),(\w+)='';for\([^)]*\)\{(\w+)=\w+\.charCodeAt\(\w+\);"
+    r"\1=([^;]+);\3\+=String\.fromCharCode\(\4\^\1\);\1=([^}]+)\}")
+
+
+def _gen3_decode(arr: list[str], body: str) -> str:
+    key_m = _G3_KEY_LOOP_RE.search(body)
+    ops_m = _GEN2_OPS_MARK_RE.search(body)
+    lcg_m = _G3_LCG_RE.search(body)
+    stream_m = _G3_STREAM_RE.search(body)
+    if not (key_m and ops_m and lcg_m and stream_m):
+        raise ExtractError("hdfilmcehennemi: 3. nesil iskelet bulunamadı.")
+    i_var, key_var, c_var, h1_var, h1_expr, h2_var, h2_expr = key_m.groups()
+    der_m = _G3_DERIVED_RE.search(body, key_m.end())
+    op_loop = _G3_OP_LOOP_RE.search(body)
+    if not (der_m and op_loop):
+        raise ExtractError("hdfilmcehennemi: 3. nesil sabitleri bulunamadı.")
+    op_var = op_loop.group(1)
+
+    arr = list(arr)
+    pos_m = _GEN2_SPLICE_POS_RE.search(body)
+    key_lit = re.search(_G3_STR_VAR.format(re.escape(key_var)), body)
+    op_lit = re.search(_G3_STR_VAR.format(re.escape(op_var)), body)
+    if key_lit and op_lit:            # aile B: KEY/OP gövdede düz dizgi
+        key, op = key_lit.group(1), op_lit.group(1)
+    elif pos_m:                       # aile A: KEY/OP diziden splice ile çıkar
+        _, _, _, n1, _, add_base, n2 = pos_m.groups()
+        nh1 = len(arr) - 2
+        op = arr.pop(int(add_base) + nh1 % int(n2))   # JS sırası: önce ADD
+        key = arr.pop(nh1 % int(n1))
+    else:
+        raise ExtractError("hdfilmcehennemi: 3. nesil KEY/OP bulunamadı.")
+    payload = "".join(arr)
+
+    h1c, h2c = _arith(h1_expr), _arith(h2_expr)
+    env = {h1_var: 0, h2_var: 0}
+    for i, ch in enumerate(key):
+        env[c_var], env[i_var] = ord(ch), i
+        env[h1_var] = _ev(h1c, env)
+        env[h2_var] = _ev(h2c, env)
+    g = der_m.groups()
+    for name, expr in zip(g[0::2], g[1::2]):
+        env[name] = _ev(_arith(expr), env)
+
+    atob_mark, rev_mark, rot_base = ops_m.group(2), ops_m.group(4), int(ops_m.group(5))
+    for ch in reversed(op):
+        if ch == atob_mark:
+            payload = base64.b64decode(payload).decode("latin-1")
+        elif ch == rev_mark:
+            payload = payload[::-1]
+        else:
+            shift = (26 - ((ord(ch) - rot_base) % 26)) % 26
+            payload = "".join(
+                chr((ord(c) - 65 + shift) % 26 + 65) if "A" <= c <= "Z" else
+                chr((ord(c) - 97 + shift) % 26 + 97) if "a" <= c <= "z" else c
+                for c in payload)
+
+    seed_var, lcg_expr = lcg_m.group(1), _arith(lcg_m.group(2))
+    n = len(payload)
+    idx = [0] * n
+    for i in range(n - 1, 0, -1):
+        env[seed_var] = _ev(lcg_expr, env)
+        idx[i] = env[seed_var] % (i + 1)
+    chars = list(payload)
+    for i in range(1, n):
+        j = idx[i]
+        chars[i], chars[j] = chars[j], chars[i]
+
+    s_var, s_init, _, sc_var, pre_expr, post_expr = stream_m.groups()
+    pre, post = _arith(pre_expr), _arith(post_expr)
+    env[s_var] = env[s_init]
+    out = []
+    for ch in chars:
+        env[sc_var] = ord(ch)
+        env[s_var] = _ev(pre, env)
+        out.append(chr(env[sc_var] ^ env[s_var]))
+        env[s_var] = _ev(post, env)
+    return "".join(out)
+
+
 def _extract_master_url_v2(embed_html: str, unpacked: str) -> str:
     real_m = _GEN2_REAL_VAR_RE.search(embed_html)
-    if not real_m:
+    inline_m = _GEN2_INLINE_CALL_RE.search(embed_html)
+    if real_m:
+        real_var = real_m.group(1)
+        call_m = re.search(r"var\s+" + re.escape(real_var) + r"\s*=\s*(\w+)\((.*?)\);", unpacked)
+        if not call_m:
+            raise ExtractError("hdfilmcehennemi: gerçek çözücü çağrısı bulunamadı.")
+        func_name, args_text = call_m.groups()
+    elif inline_m:
+        # 2026-11: gerçek çağrı artık unpacked'te bir değişkene atanmıyor;
+        # embed HTML'deki sources:[{file:(function(){… return F("…".split("|"));})()}]
+        # içine gömülü. Unpacked'teki diğer (değişkene atanan) çağrı TUZAK.
+        func_name, args_text = inline_m.groups()
+    else:
         raise ExtractError("hdfilmcehennemi: gerçek kaynak değişkeni bulunamadı.")
-    real_var = real_m.group(1)
 
-    call_m = re.search(r"var\s+" + re.escape(real_var) + r"\s*=\s*(\w+)\((.*?)\);", unpacked)
-    if not call_m:
-        raise ExtractError("hdfilmcehennemi: gerçek çözücü çağrısı bulunamadı.")
-    func_name, args_text = call_m.groups()
-
+    # Argüman ya "…".split("|") ya da ["…","…"] dizisi; dizgilerde \/ gibi JS
+    # kaçışları olabiliyor (2026-11) — çift tırnaklı JS dizgisi = JSON dizgisi.
+    def _js_str(raw: str) -> str:
+        try:
+            return json.loads(f'"{raw}"')
+        except ValueError:
+            return raw
     m_str = re.match(r'"(.*)"\.split\("(.*)"\)\s*$', args_text)
     if m_str:
         big, sep = m_str.groups()
-        arr = big.split(sep)
+        arr = _js_str(big).split(_js_str(sep))
     else:
-        arr = re.findall(r'"([^"]*)"', args_text)
+        arr = [_js_str(x) for x in re.findall(r'"([^"]*)"', args_text)]
     if not arr:
         raise ExtractError("hdfilmcehennemi: kaynak dizisi (2. nesil) bulunamadı.")
 
     body = _find_function_body(unpacked, func_name)
     if not body:
         raise ExtractError("hdfilmcehennemi: çözücü fonksiyon gövdesi bulunamadı.")
+    try:
+        url = _gen3_decode(arr, body)
+        if url.startswith("http"):
+            return url
+    except (ExtractError, ValueError, KeyError, IndexError, SyntaxError):
+        pass
     return _gen2_decode(arr, body)
 
 

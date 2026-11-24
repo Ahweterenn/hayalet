@@ -50,7 +50,22 @@ PROJECT_ROOT = PACKAGE_DIR.parent                  # .../hayalet
 # salt okunurdur (PROJECT_ROOT'a yazılamaz) ve telefonda ~/Downloads diye bir yol
 # yoktur — uygulama açılışta kendi özel dizinlerini bu değişkenlerle bildirir.
 # Masaüstünde değişken tanımlı olmadığı için davranış birebir eskisi gibi kalır.
-DOWNLOAD_DIR = Path(os.environ.get("HAYALET_DOWNLOAD_DIR") or (Path.home() / "Downloads"))
+def _default_download_dir() -> Path:
+    """Linux'ta indirme klasörünün adı dile göre değişir (Türkçe: ~/İndirilenler);
+    gerçek yol XDG'nin user-dirs.dirs dosyasında yazar. Bulunamazsa ~/Downloads."""
+    dirs = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "user-dirs.dirs"
+    try:
+        for line in dirs.read_text(encoding="utf-8").splitlines():
+            if line.startswith("XDG_DOWNLOAD_DIR="):
+                val = line.split("=", 1)[1].strip().strip('"').replace("$HOME", str(Path.home()))
+                if val and Path(val) != Path.home():
+                    return Path(val)
+    except OSError:
+        pass
+    return Path.home() / "Downloads"
+
+
+DOWNLOAD_DIR = Path(os.environ.get("HAYALET_DOWNLOAD_DIR") or _default_download_dir())
 CACHE_DIR = Path(os.environ.get("HAYALET_CACHE_DIR") or (PROJECT_ROOT / ".cache"))
 
 # --- Site endpoint'leri (canlı incelemeyle doğrulandı) --------------------

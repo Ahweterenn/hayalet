@@ -803,10 +803,24 @@ def _parse_cf_cookie(raw: str) -> dict[str, str]:
     return out
 
 
+def _cf_auto_ok(cf_cookie, ua_override, tor_proxy) -> bool:
+    """Cloudflare cookie'si kendiliğinden yenilenebilir mi (bkz. core/cfauto.py)?
+
+    Elle cookie/UA verilmişse kullanıcının seçimine dokunulmaz; Tor'da cookie
+    gerçek IP'ye bağlı olacağı için işe yaramaz.
+    """
+    from hayalet.core import cfauto
+    return not cf_cookie and not ua_override and not tor_proxy and cfauto.available()
+
+
 def _connect(adapter, override_domain, use_cache, tor_proxy,
-             cf_cookie: str | None = None, ua_override: str | None = None):
+             cf_cookie: str | None = None, ua_override: str | None = None,
+             _auto_cf: bool = True):
     """Bir adapter için kimlik+Network/SessionState kurar ve domain'i çözer.
     Başarısızsa resolver.ResolverError yükseltir (çağıran yakalar)."""
+    # Aşağıda ua_override kayıtlı cookie'nin UA'sıyla dolduruluyor; "kullanıcı
+    # elle verdi mi" sorusunu ondan ÖNCE sor.
+    auto_cf = _auto_cf and _cf_auto_ok(cf_cookie, ua_override, tor_proxy)
     persona = personas.random_persona(adapter)
     session = SessionState(base_url=adapter.known_domain, referer=adapter.known_domain,
                            user_agent=persona["user_agent"],
@@ -835,6 +849,8 @@ def _connect(adapter, override_domain, use_cache, tor_proxy,
 
     if ua_override:
         session.user_agent = ua_override
+        from hayalet.core.cfauto import impersonate_for
+        session.impersonate = impersonate_for(ua_override) or session.impersonate
         if not persona["label"].startswith("kayıtlı"):
             persona = {**persona, "label": "elle verilen UA"}
     if tor_proxy:
@@ -846,16 +862,43 @@ def _connect(adapter, override_domain, use_cache, tor_proxy,
         # Saklanan cookie'nin ömrü dolduysa site yine challenge döndürür. Bayat kaydı
         # burada silmezsek sonraki her çalıştırma da aynı ölü cookie'yle denenir ve
         # kullanıcı sebebini göremez.
+        if "challenge" in str(e).lower() and auto_cf:
+            # Cookie yok ya da süresi dolmuş: kullanıcıyı uğraştırmadan ekran
+            # dışında bir Chrome penceresiyle yenisini al ve bir kez daha dene.
+            # (Ölçüldü 2026-11-24: gizli pencerede challenge ~2,5 sn'de geçiyor.)
+            from hayalet.core import cfauto
+            if cfauto.refresh(adapter):
+                logs.log.info("cf cookie otomatik yenilendi: %s", adapter.name)
+                return _connect(adapter, override_domain, use_cache, tor_proxy,
+                                _auto_cf=False)
+            logs.log.warning("cf otomatik yenileme başarısız: %s", adapter.name)
         if not cf_cookie and prefs.load_cf(adapter.known_domain) and \
                 "challenge" in str(e).lower():
             prefs.forget_cf(adapter.known_domain)
             raise resolver.ResolverError(
                 f"Kayıtlı cf_clearance cookie'sinin süresi dolmuş (silindi). "
                 f"Tarayıcıda {adapter.known_domain} adresini açıp yeni cf_clearance "
-                f"değerini --cf-cookie ile bir kez daha ver."
+                f"değerini --cf-cookie ile bir kez daha ver ya da `hayalet --cf-al` çalıştır."
             ) from None
         raise
     return net, session, persona
+
+
+def _cf_al(adapter) -> bool:
+    """--cf-al: Chrome'dan cf_clearance + UA alıp siteye göre kaydeder."""
+    from hayalet.core import cf_grab
+    url = adapter.known_domain
+    console.print(f"  [bright_red]●[/] Chrome açılıyor: {url}")
+    try:
+        cookie, ua = cf_grab.grab(url, on_wait=lambda: console.print(
+            "  [dim]Açılan pencerede doğrulama geçene kadar bekleniyor "
+            "(kutucuk çıkarsa tıkla). Pencere kendisi kapanacak…[/]"))
+    except cf_grab.CfGrabError as e:
+        console.print(f"  [red]✕[/] {e}")
+        return False
+    prefs.save_cf(url, cookie, ua)
+    console.print(f"  [green]✔[/] {adapter.name} için Cloudflare cookie'si kaydedildi.")
+    return True
 
 
 def _connect_single(adapter, args, tor_proxy):
@@ -903,6 +946,10 @@ def main():
     p.add_argument("--user-agent", default=None,
                    help="User-Agent'ı elle sabitle (persona rotasyonunu devre dışı "
                         "bırakır). --cf-cookie ile birlikte zorunlu.")
+    p.add_argument("--cf-al", action="store_true",
+                   help="Cloudflare cookie'sini otomatik al: Chrome'u ayrı bir profille "
+                        "açar, doğrulama geçince cf_clearance + UA'yı kaydeder. --site "
+                        "verilmezse hdfilmcehennemi. Sonraki çalıştırmalar bayraksız.")
     p.add_argument("--doctor", action="store_true",
                    help="Sağlık kontrolü: domain/arama/bölüm-listesi/uçtan-uca-extract "
                         "zincirini canlı test edip 'site mi bozuldu, bizim kod mu bozuldu' "
@@ -936,6 +983,12 @@ def main():
                           "Şimdilik normal bağlantıyla devam ediliyor.[/]")
 
     _banner()
+
+    if args.cf_al:
+        if not _cf_al(SITES[args.site or "hdfilmcehennemi"]):
+            return
+        if not (args.doctor or args.search):
+            return
 
     if args.doctor:
         _run_doctor(args, tor_proxy)

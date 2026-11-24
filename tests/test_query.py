@@ -223,3 +223,11 @@ def test_coverage_tek_kelimede_devre_disi():
 def test_dilbilgisi_kelimeleri_kapsamayi_sulandirmaz():
     assert q.coverage("game of thrones", "Game of Thrones") == 1.0
     assert q.coverage("the dark knight", "Kara Şövalye - The Dark Knight") == 1.0
+
+
+def test_non_latin_letters_are_not_stripped():
+    # Latin dışı harfler silinirse bu başlık "from"a iner ve tam puan alırdı.
+    from hayalet.core import query
+    assert query.score("from", "From") == 1.0
+    assert query.score("from", "സുഡാനി  from  നൈജീരിയ") < 0.9
+    assert query.normalize("Spider-Man: No Way Home") == "spider man no way home"

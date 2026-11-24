@@ -32,7 +32,11 @@ _FOLD = str.maketrans({
     "î": "i", "Î": "i", "û": "u", "Û": "u",
 })
 
-_PUNCT_RE = re.compile(r"[^0-9a-z]+")
+# Yalnız noktalama/boşluk atılır; Latin DIŞI harfler (Malayalam, Kiril, Arap…)
+# KALIR. Eskiden [^0-9a-z] onları da siliyordu: "സുഡാനി from നൈജീരിയ" -> "from"
+# olup "from" aramasında tam puan (1.0) alıyor ve gerçek "From"un önüne
+# geçiyordu (ölçüldü 2026-11-24, oda içi arama).
+_PUNCT_RE = re.compile(r"[\W_]+")
 _WS_RE = re.compile(r"\s+")
 
 # Başlıklarda anlam taşımayan, aramayı daraltmaktan başka işe yaramayan ekler.

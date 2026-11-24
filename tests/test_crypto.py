@@ -96,3 +96,25 @@ def test_apply_ops_combination_order_matters():
         # base64 metnini TERS ÇEVİRİP SONRA çözmeye çalışmak geçersiz padding'e
         # düşer — sıra önemli olmasaydı bu da sorunsuz çözülürdü.
         hdfc._apply_ops(b64, [("reverse", None), ("atob", None)])
+
+
+# --- hdfilmcehennemi: 3. nesil (2026-11) — iki algoritma ailesi ------------
+# Gerçek çağrı embed HTML'deki sources:[{file:(function(){… return F(…)})()}]
+# içinde; F her yüklemede ya splice'lı (A) ya düz dizgi KEY/OP'lu (B) aileden.
+# Fixture'lar canlıdan alındı; beklenen adresler o an canlıda doğrulanan
+# çözücünün çıktısı (master.m3u8 indirilerek) — regresyon kilidi.
+import pytest
+
+
+@pytest.mark.parametrize("fam", ["a", "b"])
+def test_extract_master_url_gen3(fam):
+    html = (_FIXTURES / f"hdfc_embed_gen3{fam}.html").read_text(encoding="utf-8")
+    expected = (_FIXTURES / f"hdfc_expected_gen3{fam}.txt").read_text(encoding="utf-8").strip()
+    assert hdfc._extract_master_url(html) == expected
+
+
+def test_arith_rejects_non_arithmetic():
+    with pytest.raises(hdfc.ExtractError):
+        hdfc._arith("__import__('os').system('x')")
+    with pytest.raises(hdfc.ExtractError):
+        hdfc._arith("'a'+1")

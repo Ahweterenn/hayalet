@@ -120,14 +120,29 @@ def extract_stream(net: Network, session: SessionState, bolum_url: str) -> Strea
         iframe_url = _abs_url(utils.decrypt_rmk(m.group(1)))
     if "http" not in iframe_url:
         raise ExtractError(f"Çözülen değer URL değil: {iframe_url[:60]}")
+    return resolve_iframe(net, iframe_url, bolum_url, dub_url)
 
+
+def resolve_iframe(net: Network, iframe_url: str, page_url: str,
+                   dub_url: str | None = None) -> StreamInfo:
+    """Oynatıcı iframe'i -> master m3u8 + TR altyazı (NP_CONFIG ya da openPlayer).
+
+    Dizipal'den ayrı tutuldu çünkü aynı oynatıcı ailesi (pichive.online) Dizipal
+    klonlarında da çıkıyor (asyawatch/selcukflix — bkz. sites/_dizipal_next).
+    """
+    iframe_url = _abs_url(iframe_url)
     origin = f"{urlparse(iframe_url).scheme}://{urlparse(iframe_url).netloc}"
 
     # 2) iframe -> playList + TR altyazı --------------------------------
-    ihtml = net.get(iframe_url, referer=bolum_url).text
+    ihtml = net.get(iframe_url, referer=page_url).text
 
     np_cfg = _np_config(ihtml)
     if np_cfg is not None:
+        from hayalet.core import npgate
+        try:
+            npgate.apply(ihtml, np_cfg)   # &p=<iş kanıtı> (bkz. core/npgate.py)
+        except npgate.GateError as e:
+            raise ExtractError(f"Oynatıcı gate'i çözülemedi: {e}")
         sources = np_cfg.get("sources") or []
         if not sources or not sources[0].get("master"):
             raise ExtractError("Oynatıcı ayarlarında kaynak yok.")

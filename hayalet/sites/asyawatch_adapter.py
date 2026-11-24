@@ -16,6 +16,8 @@ from hayalet.sites._dizipal_next import DizipalNextAdapter
 class AsyawatchAdapter(DizipalNextAdapter):
     name = "asyawatch"
     known_domain = "https://asyawatch.com"
+    # Yeni kuşakta searchContent "forbidden-action"; arama kutusu getBrowseTitles.
+    search_mode = "browse"
 
     def _decode(self, raw: str):
         """asyawatch yükü: düz base64 JSON (`eyJ...`); '=' dolgusu eksik olabilir."""
