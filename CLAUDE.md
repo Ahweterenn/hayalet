@@ -185,8 +185,13 @@ hdfilmcehennemi never connected on the phone (measured: identical value across r
 fix a new value and 200). Diagnosed with the `probe` debug hook's `cfip` mode (fresh refresh + the saved
 cookie tried over IPv4/IPv6) and `wvget:<url>` (page text as the WebView sees it — e.g.
 `/cdn-cgi/trace` shows the IP Cloudflare sees); `probe stack` dumps all Python thread stacks. These
-hooks run on their own thread, so they must be sent to a **warm** app (a cold-start `am start` with
-`--es probe …` currently produces nothing). The desktop uses the same `cfauto.refresh` with the hidden-Chrome
+hooks run on their own thread (waiting for Python start) and work on a cold start too — **except right
+after `adb install`**: Samsung puts its own `PackageUpdateActivity` on top, the `am start` extras go to it
+("intent delivered to currently running top-most instance"), and the app is relaunched without them.
+Open the app once after installing, then send the hook. `prefs.json` writes are locked + atomic
+(`os.replace`) and `cfauto.refresh` keeps the old record until a new one arrives and skips solving if
+another thread refreshed while it waited — before that, concurrent startup threads read `{}` mid-write
+(could wipe all prefs) and re-launched the WebView over a just-fetched cookie. The desktop uses the same `cfauto.refresh` with the hidden-Chrome
 solver. A PC cookie is useless on the phone (bound to the issuing IP), so each device gets its own.
 The Windows instructions below are kept for reference.
 

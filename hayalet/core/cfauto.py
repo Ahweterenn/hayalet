@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 
 from hayalet.core import prefs
 
@@ -82,16 +83,27 @@ def available() -> bool:
 
 
 def refresh(adapter, timeout: float = 45) -> bool:
-    """Yeni cookie alıp kaydeder. Başarılıysa True (hata yutulur, False döner)."""
+    """Yeni cookie alıp kaydeder. Başarılıysa True (hata yutulur, False döner).
+
+    Eski kayıt yenisi gelene kadar SİLİNMEZ: önce silmek, çözücü çalışırken
+    (~3 sn) aynı siteye bağlanan diğer iş parçacıklarına "cookie yok" gösterip
+    onları da yenilemeye itiyordu — biri az önce alınan cookie'yi silip
+    tarayıcıyı yeniden açıyordu (ölçüldü 2026-11-25, telefonda açılış).
+    Kilidi beklerken başkası yenilediyse çözücü hiç çalıştırılmaz.
+    """
     if not available():
         return False
+    asked = time.time()
     with _lock:   # aynı anda iki pencere/WebView açılmasın
-        prefs.forget_cf(adapter.known_domain)
+        rec = prefs.load_cf(adapter.known_domain)
+        if rec and rec.get("ts", 0) >= asked:
+            return True   # biz beklerken başka bir iş parçacığı yeniledi
         try:
             got = (solver or _desktop_solver)(adapter.known_domain, timeout)
         except Exception:
-            return False
+            got = None
         if not got or not got[0]:
+            prefs.forget_cf(adapter.known_domain)   # bayat kaydı tutma
             return False
         cookie, ua = got
         prefs.save_cf(adapter.known_domain, cookie, ua)

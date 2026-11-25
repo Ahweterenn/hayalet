@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -24,6 +26,13 @@ _FILE = config.CACHE_DIR / "prefs.json"
 # kararını ise siteye sorup ChallengeError'a bakarak veriyoruz.
 _CF_TTL = 24 * 3600
 
+# Telefonda açılışta birçok iş parçacığı (raflar, cf yenileme, devam kaydı) bu
+# dosyaya aynı anda dokunuyor. Eskiden write_text dosyayı önce boşaltıyordu:
+# o anda okuyan {} görüyordu ("cookie yok", ölçüldü 2026-11-25) ve {}'nin
+# üstüne kendi alanını yazan TÜM tercihleri silebiliyordu. Okuma-değiştirme-
+# yazma kilitle sıralanır, yazma geçici dosya + os.replace ile tek hamledir.
+_lock = threading.RLock()
+
 
 def load() -> dict:
     try:
@@ -32,26 +41,34 @@ def load() -> dict:
         return {}
 
 
+def _write(data: dict) -> None:
+    _FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _FILE.with_name(f"{_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, _FILE)
+
+
 def save(**kv) -> None:
-    try:
-        _FILE.parent.mkdir(parents=True, exist_ok=True)
-        data = load()
-        data.update(kv)
-        _FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
+    with _lock:
+        try:
+            data = load()
+            data.update(kv)
+            _write(data)
+        except Exception:
+            pass
 
 
 def forget_resume() -> bool:
     """'Kaldığın yerden devam' kaydını siler. Silinecek kayıt varsa True."""
-    try:
-        data = load()
-        if data.pop("resume", None) is None:
+    with _lock:
+        try:
+            data = load()
+            if data.pop("resume", None) is None:
+                return False
+            _write(data)
+            return True
+        except Exception:
             return False
-        _FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        return True
-    except Exception:
-        return False
 
 
 # --- Cloudflare cf_clearance kalıcılığı ----------------------------------
@@ -68,9 +85,10 @@ def save_cf(host: str, cookie: str, user_agent: str) -> None:
     UA'sına bağlar, farklı UA ile gönderilirse geçersiz sayar. Bu yüzden ikisi
     tek kayıtta birlikte tutulur ve birlikte geri yüklenir.
     """
-    cf = load().get("cf") or {}
-    cf[_host(host)] = {"cookie": cookie, "user_agent": user_agent, "ts": time.time()}
-    save(cf=cf)
+    with _lock:
+        cf = load().get("cf") or {}
+        cf[_host(host)] = {"cookie": cookie, "user_agent": user_agent, "ts": time.time()}
+        save(cf=cf)
 
 
 def load_cf(host: str) -> dict | None:
@@ -85,6 +103,7 @@ def load_cf(host: str) -> dict | None:
 
 def forget_cf(host: str) -> None:
     """Geçersizleşmiş kaydı siler (challenge tekrar geldiğinde çağrılır)."""
-    cf = load().get("cf") or {}
-    if cf.pop(_host(host), None) is not None:
-        save(cf=cf)
+    with _lock:
+        cf = load().get("cf") or {}
+        if cf.pop(_host(host), None) is not None:
+            save(cf=cf)
