@@ -2,7 +2,7 @@
 
 Cookie'yi KİM alırsa alsın kayıt aynıdır (prefs.save_cf: cookie + onu veren
 tarayıcının UA'sı). Değişen yalnız "çözücü":
-  - masaüstü: ekran dışı bir Chrome penceresi (core/cf_grab.py, CDP)
+  - masaüstü: penceresiz (headless) Chrome (core/cf_grab.py, CDP)
   - Android: uygulamanın görünmez WebView'i (CfSolver.java) — köprü
     (hayalet_app.py) açılışta `cfauto.solver`'ı ona bağlar.
 Cookie onu alan cihazın IP'sine bağlı olduğundan her cihaz kendi cookie'sini
@@ -63,8 +63,7 @@ def apply_saved(adapter, session) -> bool:
 
 
 def _desktop_solver(url: str, timeout: float):
-    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        return None
+    # Headless: ekran (DISPLAY) gerekmez, systemd zamanlayıcısından da çalışır.
     from hayalet.core import cf_grab
     return cf_grab.grab(url, timeout=timeout, hidden=True)
 
@@ -74,7 +73,12 @@ def available() -> bool:
         return False
     if solver is not None:
         return True
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    from hayalet.core import cf_grab
+    try:
+        cf_grab._find_chrome()
+    except cf_grab.CfGrabError:
+        return False
+    return True
 
 
 def refresh(adapter, timeout: float = 45) -> bool:

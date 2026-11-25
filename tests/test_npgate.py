@@ -22,13 +22,31 @@ def _w(s):
 
 
 def test_custom_gate_parsed_and_solved():
-    parts, idx, shift, radix = npgate._parse_custom(_LIVE)
+    parts, idx, test, radix = npgate._parse_custom(_LIVE)
     assert parts == ["N", "=:", "=Ho_68CkexS", "=:", "I"]
-    assert (idx, shift, radix) == (2, 20, 10)
+    assert (idx, test, radix) == (2, (">>>", 20), 10)
     c = npgate.solve(_LIVE, {"n": "LdXlQ9GtaR89", "b": 12})
     assert _w("LdXlQ9GtaR89:Ho_68CkexS:" + c)[2] >> 20 == 0
     # ilk çözüm olmalı (oynatıcı da ilkini döndürür)
     assert all(_w(f"LdXlQ9GtaR89:Ho_68CkexS:{i}")[2] >> 20 for i in range(int(c)))
+
+
+# 2026-11-25 selcukflix: üst bit kaydırması yerine alt bit maskesi (& 4095),
+# taban 36 ve tuz sayacın hem önünde hem arkasında.
+_LIVE_MASK = ("<script>window.NP_GATE=function(_ta,_pqd){var _fdcr=String.fromCharCode("
+              "106,102,56,78,111,68,118,67,121,49);for(var _st=0;_st<1e8;_st++){var _muw="
+              "_st.toString(36);if((_pqd(_ta+_fdcr+_muw+_fdcr)[3]&4095)===0)return _muw;}"
+              "return \"\";};\nwindow.NP_CONFIG = {};</script>")
+
+
+def test_mask_gate_parsed_and_solved():
+    parts, idx, test, radix = npgate._parse_custom(_LIVE_MASK)
+    assert parts == ["N", "=jf8NoDvCy1", "I", "=jf8NoDvCy1"]
+    assert (idx, test, radix) == (3, ("&", 4095), 36)
+    c = npgate.solve(_LIVE_MASK, {"n": "abc"})
+    assert _w("abcjf8NoDvCy1" + c + "jf8NoDvCy1")[3] & 4095 == 0
+    assert all(_w("abcjf8NoDvCy1" + npgate._to_radix(i, 36) + "jf8NoDvCy1")[3] & 4095
+               for i in range(int(c, 36)))
 
 
 def test_default_gate_without_np_gate():

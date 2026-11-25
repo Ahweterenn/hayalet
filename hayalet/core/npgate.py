@@ -53,7 +53,7 @@ def _js_string_values(src: str) -> dict[str, str]:
 
 
 def _parse_custom(html: str):
-    """window.NP_GATE gövdesinden (parçalar, kelime_idx, kaydırma, taban) çıkarır.
+    """window.NP_GATE gövdesinden (parçalar, kelime_idx, (işlem, değer), taban) çıkarır.
 
     parçalar: "N" (gate.n), "I" (sayaç) ya da sabit dizgilerden oluşan liste.
     """
@@ -62,10 +62,13 @@ def _parse_custom(html: str):
     if not m:
         return None
     p_n, p_hash, body = m.groups()
-    call = re.search(re.escape(p_hash) + r"\(([^()]*)\)\s*\[(\d+)\]\s*>>>\s*(\d+)\s*\)\s*===?\s*0", body)
+    # Koşul iki biçimde görüldü: üst bitler `(h(..)[k] >>> s) === 0` ve
+    # (2026-11-25, selcukflix/pichive) alt bitler `(h(..)[k] & m) === 0`.
+    call = re.search(re.escape(p_hash) + r"\(([^()]*)\)\s*\[(\d+)\]\s*(>>>|&)\s*(\d+)\s*\)\s*===?\s*0", body)
     if not call:
         raise GateError("NP_GATE koşulu tanınmadı.")
-    expr, word_idx, shift = call.group(1), int(call.group(2)), int(call.group(3))
+    expr, word_idx = call.group(1), int(call.group(2))
+    test = (call.group(3), int(call.group(4)))
     counter = re.search(r"(\w+)\s*=\s*\w+\.toString\((\d+)\)", body)
     counter_var, radix = (counter.group(1), int(counter.group(2))) if counter else (None, 10)
     strings = _js_string_values(body)
@@ -84,7 +87,7 @@ def _parse_custom(html: str):
             raise GateError(f"NP_GATE ifadesi tanınmadı: {tok[:30]}")
     if "I" not in parts:
         raise GateError("NP_GATE sayaç parçası bulunamadı.")
-    return parts, word_idx, shift, radix
+    return parts, word_idx, test, radix
 
 
 def solve(html: str, gate: dict) -> str:
@@ -92,9 +95,9 @@ def solve(html: str, gate: dict) -> str:
     n = str(gate.get("n") or "")
     custom = _parse_custom(html)
     if custom:
-        parts, word_idx, shift, radix = custom
+        parts, word_idx, (op, val), radix = custom
     else:
-        parts, word_idx, shift, radix = ["N", "=:", "I"], 0, 32 - int(gate.get("b") or 12), 10
+        parts, word_idx, (op, val), radix = ["N", "=:", "I"], 0, (">>>", 32 - int(gate.get("b") or 12)), 10
     pre = []
     for p in parts:
         if p == "I":
@@ -106,7 +109,8 @@ def solve(html: str, gate: dict) -> str:
     pre_s, post_s = "".join(pre), "".join(post)
     for i in range(_MAX_TRIES):
         c = _to_radix(i, radix)
-        if _words(pre_s + c + post_s)[word_idx] >> shift == 0:
+        w = _words(pre_s + c + post_s)[word_idx]
+        if (w >> val if op == ">>>" else w & val) == 0:
             return c
     raise GateError("gate çözülemedi (deneme sınırı aşıldı).")
 

@@ -45,9 +45,12 @@ python -m hayalet --site hdfilmcehennemi --search "matrix" --series 0 --action e
 # Ya da tek komutla otomatik: Chrome'u ayrı profille (~/.cache/hayalet/cf-chrome, CDP) açar,
 # doğrulama geçince cf_clearance + UA'yı aynı prefs kaydına yazar (core/cf_grab.py):
 python -m hayalet --cf-al                     # --site verilmezse hdfilmcehennemi; --doctor/--search ile birleşebilir
-# Otomatik: _connect bir challenge görünce (cookie yok/bayat) ekran dışı bir Chrome penceresiyle
-# (cf_grab.grab(hidden=True), ~2,5 sn) cookie'yi kendisi yeniler ve bir kez daha bağlanır. Elle --cf-cookie/
-# --user-agent, --tor, ekran yok (DISPLAY/WAYLAND_DISPLAY) ya da HAYALET_CF_OTOMATIK=0 ise devre dışı.
+# Otomatik: _connect bir challenge görünce (cookie yok/bayat) PENCERESİZ (--headless=new) bir Chrome'la
+# (cf_grab.grab(hidden=True), ~2 sn) cookie'yi kendisi yeniler ve bir kez daha bağlanır. Headless'in kendi
+# UA'sı "HeadlessChrome" olduğundan --user-agent ile normal Chrome UA'sı verilir (_headless_ua). Ekran
+# gerekmez (systemd zamanlayıcısından da çalışır). Eskiden ekran dışı (-32000) pencere açıyordu; GNOME onu
+# ekrana çekti ve günlük kontrolde üst üste pencereler açıldı (2026-11-25) — geri dönme. Elle --cf-cookie/
+# --user-agent, --tor, Chrome yok ya da HAYALET_CF_OTOMATIK=0 ise devre dışı.
 ```
 
 `--quality` only affects `--action extract` output; **downloads always grab the highest-quality variant** (see `actions.download` below) — no quality prompt exists anymore.
