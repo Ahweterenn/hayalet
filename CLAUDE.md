@@ -178,7 +178,15 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 cf cookie+UA (`cfauto.apply_saved`), and on a challenge calls `cfauto.refresh`, whose `solver` the bridge
 binds to `CfSolver.solve` — an invisible WebView that expires any old `cf_clearance`, loads the site and
 polls `CookieManager` until a fresh one appears, returning it with the WebView UA
-(`impersonate_for` → `chrome_android`). The desktop uses the same `cfauto.refresh` with the hidden-Chrome
+(`impersonate_for` → `chrome_android`). **"Fresh" means a value different from the one present before
+the load** (2026-11-25): Cloudflare writes the cookie with `Secure; SameSite=None` and the plain
+`Max-Age=0` delete was silently ignored, so every "refresh" returned the same stale cookie and
+hdfilmcehennemi never connected on the phone (measured: identical value across refreshes; after the
+fix a new value and 200). Diagnosed with the `probe` debug hook's `cfip` mode (fresh refresh + the saved
+cookie tried over IPv4/IPv6) and `wvget:<url>` (page text as the WebView sees it — e.g.
+`/cdn-cgi/trace` shows the IP Cloudflare sees); `probe stack` dumps all Python thread stacks. These
+hooks run on their own thread, so they must be sent to a **warm** app (a cold-start `am start` with
+`--es probe …` currently produces nothing). The desktop uses the same `cfauto.refresh` with the hidden-Chrome
 solver. A PC cookie is useless on the phone (bound to the issuing IP), so each device gets its own.
 The Windows instructions below are kept for reference.
 

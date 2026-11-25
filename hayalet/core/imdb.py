@@ -80,8 +80,21 @@ def _http():
     return cr.Session(impersonate="chrome")
 
 
+# IMDb erişimi reddederse (2026-11-25: GraphQL her yerden 403) her açılışta
+# ve her yapım sayfasında yeniden denemek boşuna istek + gürültülü hata kaydı.
+# Bir süre hiç sormadan hemen ImdbError verilir; IMDb rafları/puanları gizlenir,
+# uygulamanın geri kalanı etkilenmez. Süre dolunca kendiliğinden yeniden denenir.
+_BLOCK_S = 6 * 3600
+_blocked_until = 0.0
+
+
 def _gql(q: str) -> dict:
+    global _blocked_until
+    if time.time() < _blocked_until:
+        raise ImdbError("IMDb erişimi reddetti (geçici olarak sorulmuyor)")
     r = _http().post(GQL_URL, json={"query": q}, headers=_HEADERS, timeout=_TIMEOUT)
+    if r.status_code in (401, 403):
+        _blocked_until = time.time() + _BLOCK_S
     if r.status_code != 200:
         raise ImdbError(f"IMDb HTTP {r.status_code}")
     data = r.json()
